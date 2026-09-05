@@ -132,6 +132,22 @@ python3 ../palomar-preflight/palomar_run_report.py print-table \
 
 Use `--report-out PATH` to override the default location.
 
+## Sibling repo matrix
+
+From the toolkit directory, summarize Palomar preflight status for every
+**sibling repo** that has `scripts/palomar_preflight.sh` and **no Palomar
+registry badge** in its README (registered entries are excluded):
+
+```bash
+./palomar_sibling_matrix.sh
+# or
+python3 palomar_sibling_matrix.py --parent-dir ..
+```
+
+Reads each repo's `.cache/palomar-editorial/preflight-run.json`. Repos without
+a saved run show `—` in all columns. Use `--include-badged` to list registered
+repos too; `--format json` for machine-readable output.
+
 ## Refresh policy pin
 
 Policy still lives in each project's `vendor/palomar-policy/`. Preflight syncs
