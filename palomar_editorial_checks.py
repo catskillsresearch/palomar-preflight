@@ -233,9 +233,30 @@ def check_scope_comparator_sync(formalization: dict, cfg: dict) -> list[str]:
             )
 
     limitations = " ".join(str(x) for x in formalization.get("limitations", []) or [])
-    if "Solution.lean imports" in limitations and "Scott1964" not in limitations:
-        errors.append("limitations should mention Solution.lean imports Scott1964 proofs")
+    if "Solution.lean imports" in limitations:
+        roots = solution_import_roots()
+        if roots and not any(root in limitations for root in roots):
+            listed = ", ".join(roots)
+            errors.append(
+                f"limitations should mention Solution.lean imports {listed} proofs"
+            )
     return errors
+
+
+def solution_import_roots() -> list[str]:
+    """Top-level modules imported by Solution.lean, e.g. Hybrid or Scott1964."""
+    path = ROOT / "Solution.lean"
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8")
+    roots: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"^import\s+(\S+)", text, re.MULTILINE):
+        root = match.group(1).split(".", 1)[0]
+        if root and root not in seen:
+            seen.add(root)
+            roots.append(root)
+    return roots
 
 
 def check_compared_sources(formalization: dict, cfg: dict) -> list[str]:

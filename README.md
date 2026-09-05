@@ -139,14 +139,19 @@ From the toolkit directory, summarize Palomar preflight status for every
 registry badge** in its README (registered entries are excluded):
 
 ```bash
-./report.sh
-# equivalent to:
-python3 palomar_sibling_matrix.py --parent-dir ..
+./report.sh              # Canvas panel beside chat (in Cursor terminal)
+./report.sh --print      # markdown to stdout
+./report.sh --copy       # clipboard for chat paste
 ```
 
-Reads each repo's `.cache/palomar-editorial/preflight-run.json`. Repos without
-a saved run show `—` in all columns. Use `--include-badged` to list registered
-repos too; `--format json` for machine-readable output.
+**Recommended in Cursor:** run `./report.sh` from the integrated terminal.
+It writes `palomar-sibling-matrix.canvas.tsx` under your workspace
+`.cursor/projects/.../canvases/` and opens it — click the **Canvas** tab
+beside chat for the formatted table panel.
+
+Reads each repo's `.cache/palomar-editorial/preflight-run.json`. Use
+`--include-badged` or `--format json` as needed. Override canvas directory
+with `PALOMAR_CANVAS_DIR` if auto-detection fails.
 
 ## Refresh policy pin
 

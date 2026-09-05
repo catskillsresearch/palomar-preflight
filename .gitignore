@@ -1,5 +1,6 @@
 .venv-editorial/
 .cache/
+reports/
 *.pyc
 __pycache__/
 .DS_Store
