@@ -30,3 +30,33 @@ palomar_cd_project() {
   export PALOMAR_PROJECT_ROOT="$root"
   cd "$root"
 }
+
+# Resolve a plain-file palomar-preflight checkout for a Lean project.
+# Search order: PALOMAR_PREFLIGHT_ROOT, sibling ../palomar-preflight,
+# in-repo palomar-preflight/ (CI checkout), legacy vendor/palomar-preflight/.
+palomar_resolve_toolkit() {
+  local project_root="${1:-}"
+  local candidate=""
+  if [[ -z "$project_root" ]]; then
+    project_root="$(palomar_project_root)" || return 1
+  fi
+  project_root="$(cd "$project_root" && pwd)"
+  for candidate in \
+    "${PALOMAR_PREFLIGHT_ROOT:-}" \
+    "$(dirname "$project_root")/palomar-preflight" \
+    "$project_root/palomar-preflight" \
+    "$project_root/vendor/palomar-preflight"; do
+    [[ -z "$candidate" ]] && continue
+    if [[ -f "$candidate/palomar_preflight.sh" ]]; then
+      printf '%s\n' "$(cd "$candidate" && pwd)"
+      return 0
+    fi
+  done
+  cat >&2 <<EOF
+error: palomar-preflight toolkit not found for $project_root
+  tried: PALOMAR_PREFLIGHT_ROOT, ../palomar-preflight, palomar-preflight/, vendor/palomar-preflight/
+  local dev: keep palomar-preflight as a sibling of the Lean project
+  CI: checkout catskillsresearch/palomar-preflight into palomar-preflight/
+EOF
+  return 1
+}

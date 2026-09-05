@@ -161,8 +161,29 @@ def add(name: str) -> None:
         seen.add(name)
         ordered.append(name)
 
+try:
+    challenge_lean = open("Challenge.lean", encoding="utf-8").read()
+except OSError:
+    challenge_lean = ""
+
+
+def def_is_sorry_in_challenge(short: str) -> bool:
+    if not challenge_lean:
+        return False
+    pat = re.compile(
+        rf"(?:^|\n)(?:private\s+|protected\s+|noncomputable\s+)?def\s+{re.escape(short)}\b"
+        rf"(?:(?!^(?:private\s+|protected\s+|noncomputable\s+)?"
+        rf"(?:def|theorem|structure|inductive|abbrev|namespace|end)\b)[\s\S])*?"
+        rf":=\s*sorry\b",
+        re.MULTILINE,
+    )
+    return bool(pat.search(challenge_lean))
+
+
 for name in cfg.get("definition_names", []):
-    add(name)
+    short = name.rsplit(".", 1)[-1]
+    if not def_is_sorry_in_challenge(short):
+        add(name)
 for extra in os.environ.get("PALOMAR_EXTRA_PRINT_NAMES", "").split():
     add(extra)
 for path in sys.argv[1:]:
@@ -180,7 +201,7 @@ print("\n".join(ordered))
 PY
 )
 
-if [[ ${#BODY_NAMES[@]} -eq 0 ]]; then
+if [[ ${#BODY_NAMES[@]} -eq 0 || -z "${BODY_NAMES[0]:-}" ]]; then
   echo "OK: no definition bodies to compare yet."
   exit 0
 fi

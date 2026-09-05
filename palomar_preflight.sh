@@ -7,37 +7,100 @@ set -euo pipefail
 TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=palomar-lib.sh
 source "$TOOLKIT_ROOT/palomar-lib.sh"
-palomar_cd_project
 export PYTHONPATH="$TOOLKIT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 MECHANICAL_ONLY=0
 NO_POLICY_SYNC=0
-for arg in "$@"; do
-  case "$arg" in
-    --mechanical-only) MECHANICAL_ONLY=1 ;;
-    --no-policy-sync) NO_POLICY_SYNC=1 ;;
-    -h|--help)
-      cat <<'EOF'
-Usage: palomar_preflight.sh [--mechanical-only] [--no-policy-sync]
+PALOMAR_FORBIDDEN_PREFIXES=()
+PALOMAR_CLOSURE_PREFIXES=()
+PALOMAR_EXTRA_PRINT_NAMES=()
 
-  --mechanical-only   Skip PalomarPolicy sync and LLM editorial audit.
-                      Still runs Palomar-pinned Comparator.
-  --no-policy-sync    Audit against committed vendor/palomar-policy only.
+palomar_preflight_usage() {
+  cat <<'EOF'
+Usage: palomar_preflight.sh [OPTIONS] [PROJECT_ROOT]
 
-Project wrappers should set PALOMAR_PROJECT_ROOT and PALOMAR_SORRY_PATHS.
+Run Palomar mechanical preflight (and optional editorial audit) for a Lean
+project containing comparator.json and lean-toolchain.
+
+Options:
+  --project-root DIR       Lean project root (default: discover from cwd)
+  --sorry-paths PATHS      Space-separated sorry scan paths (default: Solution.lean)
+  --forbidden-prefix P     Extra forbidden Challenge import prefix (repeatable)
+  --closure-prefix P       Extra namespace prefix for declaration-closure walk
+  --extra-print-name N     Extra constant to #print in closure walk (repeatable)
+  --mechanical-only        Skip policy sync and LLM editorial audit
+  --no-policy-sync         Audit against committed vendor/palomar-policy only
+  -h, --help               Show this help
+
+Project wrappers typically exec this script with --project-root and --sorry-paths.
 Optional scripts/palomar_preflight_local.sh runs extra mechanical checks.
 
-Full preflight requires CURSOR_API_KEY (or ../tokens_ssto.yaml) and runs
-Cursor editorial review: gpt-5.6-sol for substantive passes, composer-2.5 for lighter checks.
+Full preflight requires CURSOR_API_KEY (or ../tokens_ssto.yaml) and runs Cursor
+editorial review: gpt-5.6-sol for substantive passes, composer-2.5 for lighter.
 EOF
-      exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project-root)
+      [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
+      export PALOMAR_PROJECT_ROOT="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --sorry-paths)
+      [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
+      export PALOMAR_SORRY_PATHS="$2"
+      shift 2
+      ;;
+    --forbidden-prefix)
+      [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
+      PALOMAR_FORBIDDEN_PREFIXES+=("$2")
+      shift 2
+      ;;
+    --closure-prefix)
+      [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
+      PALOMAR_CLOSURE_PREFIXES+=("$2")
+      shift 2
+      ;;
+    --extra-print-name)
+      [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
+      PALOMAR_EXTRA_PRINT_NAMES+=("$2")
+      shift 2
+      ;;
+    --mechanical-only) MECHANICAL_ONLY=1; shift ;;
+    --no-policy-sync) NO_POLICY_SYNC=1; shift ;;
+    -h|--help) palomar_preflight_usage; exit 0 ;;
+    --) shift; break ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      palomar_preflight_usage >&2
+      exit 2
       ;;
     *)
-      echo "Unknown option: $arg" >&2
-      exit 2
+      if [[ -z "${PALOMAR_PROJECT_ROOT:-}" && -f "$1/comparator.json" && -f "$1/lean-toolchain" ]]; then
+        export PALOMAR_PROJECT_ROOT="$(cd "$1" && pwd)"
+        shift
+      else
+        echo "Unknown argument: $1" >&2
+        palomar_preflight_usage >&2
+        exit 2
+      fi
       ;;
   esac
 done
+
+if [[ ${#PALOMAR_FORBIDDEN_PREFIXES[@]} -gt 0 ]]; then
+  export PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES="${PALOMAR_FORBIDDEN_PREFIXES[*]}"
+fi
+if [[ ${#PALOMAR_CLOSURE_PREFIXES[@]} -gt 0 ]]; then
+  export PALOMAR_CLOSURE_PREFIXES="${PALOMAR_CLOSURE_PREFIXES[*]}"
+fi
+if [[ ${#PALOMAR_EXTRA_PRINT_NAMES[@]} -gt 0 ]]; then
+  export PALOMAR_EXTRA_PRINT_NAMES="${PALOMAR_EXTRA_PRINT_NAMES[*]}"
+fi
+
+palomar_cd_project
+export PALOMAR_SORRY_PATHS="${PALOMAR_SORRY_PATHS:-Solution.lean}"
 
 step() {
   printf '\n== %s ==\n' "$1"

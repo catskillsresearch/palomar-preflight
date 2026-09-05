@@ -33,7 +33,10 @@ QUALIFIED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_']*\.[A-Za-z_][A-Za-z0-9_']*")
 THEOREM_SOURCE_HINTS: dict[str, tuple[str, ...]] = {}
 
 SORRY_DEF = re.compile(
-    r"^(?:noncomputable\s+)?def\s+(\w+)\b[\s\S]*?:=\s*sorry",
+    r"^(?:noncomputable\s+)?def\s+(\w+)\b"
+    r"(?:(?!^(?:noncomputable\s+)?"
+    r"(?:def|theorem|structure|inductive|abbrev|namespace|end)\b)[\s\S])*?"
+    r":=\s*sorry",
     re.MULTILINE,
 )
 
