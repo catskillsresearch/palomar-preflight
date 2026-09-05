@@ -113,7 +113,9 @@ def resolve_cursor_canvas_dir(workspace: Path | None = None) -> Path | None:
 def phase_cell(report: dict, phase_id: str) -> str:
     phase = report.get("phases", {}).get(phase_id, {})
     status = phase.get("status", "not_run")
-    if status in {"not_run", "skip"}:
+    if status == "skip":
+        return "pass"
+    if status == "not_run":
         return "—"
     return status_glyph(status)
 
