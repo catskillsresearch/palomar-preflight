@@ -139,8 +139,8 @@ From the toolkit directory, summarize Palomar preflight status for every
 registry badge** in its README (registered entries are excluded):
 
 ```bash
-./palomar_sibling_matrix.sh
-# or
+./report.sh
+# equivalent to:
 python3 palomar_sibling_matrix.py --parent-dir ..
 ```
 

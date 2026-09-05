@@ -36,6 +36,7 @@ TOOLKIT_PATHS = [
     "palomar_run_report.py",
     "palomar_sibling_matrix.py",
     "palomar_sibling_matrix.sh",
+    "report.sh",
     "palomar_axioms_check.sh",
     "palomar_policy_sync.py",
     "palomar_preflight_sync.py",
