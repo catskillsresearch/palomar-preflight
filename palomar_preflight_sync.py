@@ -33,6 +33,8 @@ TOOLKIT_PATHS = [
     "palomar_editorial_audit.py",
     "palomar_editorial_checks.py",
     "palomar_mechanical_report.py",
+    "palomar_run_report.py",
+    "palomar_axioms_check.sh",
     "palomar_policy_sync.py",
     "palomar_preflight_sync.py",
     "requirements-editorial.txt",

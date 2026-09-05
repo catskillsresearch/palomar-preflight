@@ -67,6 +67,7 @@ Options:
 | `--extra-print-name N` | Extra `#print` name for closure walk |
 | `--mechanical-only` | Skip policy sync + LLM editorial audit |
 | `--no-policy-sync` | Use committed `vendor/palomar-policy` only |
+| `--report-out PATH` | Structured run report (default: `.cache/palomar-editorial/preflight-run.json`) |
 
 Environment overrides (optional):
 
@@ -109,6 +110,27 @@ bash scripts/palomar_preflight.sh                     # before Palomar submit
 
 Mechanical includes Palomar-pinned Comparator (`verify-comparator.sh`):
 declaration-closure Const matching, axiom checks, and Lean kernel replay.
+
+## Run report (phase overview)
+
+Every preflight run writes **`.cache/palomar-editorial/preflight-run.json`**
+(schema `palomar-preflight-run-v1`). It records:
+
+- Per-phase status (`pass` / `fail` / `skip` / `not_run`), summary line, exit code,
+  duration, and tail of captured output
+- Run options (`--mechanical-only`, sorry paths, closure prefixes, …)
+- Repository and toolkit commits, overall exit code and failed phase
+- Paths to related artifacts (`comparator_last_run_log`, `review_draft`, …)
+- Editorial synthesis outcome when the LLM audit runs
+
+Render a markdown phase table from the last run:
+
+```bash
+python3 ../palomar-preflight/palomar_run_report.py print-table \
+  --report .cache/palomar-editorial/preflight-run.json
+```
+
+Use `--report-out PATH` to override the default location.
 
 ## Refresh policy pin
 

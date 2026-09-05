@@ -59,3 +59,92 @@ error: palomar-preflight toolkit not found for $project_root
 EOF
   return 1
 }
+
+# --- Preflight run report (.cache/palomar-editorial/preflight-run.json) ---
+
+palomar_report_path() {
+  printf '%s\n' "${PALOMAR_REPORT_PATH:-.cache/palomar-editorial/preflight-run.json}"
+}
+
+palomar_report_py() {
+  local toolkit="${PALOMAR_TOOLKIT_ROOT:-$(palomar_toolkit_root)}"
+  python3 "$toolkit/palomar_run_report.py" --out "$(palomar_report_path)" "$@"
+}
+
+palomar_report_init() {
+  local toolkit="${PALOMAR_TOOLKIT_ROOT:-$(palomar_toolkit_root)}"
+  local options
+  options="$(python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "mechanical_only": os.environ.get("PALOMAR_MECHANICAL_ONLY") == "1",
+    "no_policy_sync": os.environ.get("PALOMAR_NO_POLICY_SYNC") == "1",
+    "sorry_paths": os.environ.get("PALOMAR_SORRY_PATHS", "Solution.lean"),
+    "forbidden_prefixes": os.environ.get("PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES", "").split(),
+    "closure_prefixes": os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split(),
+    "extra_print_names": os.environ.get("PALOMAR_EXTRA_PRINT_NAMES", "").split(),
+    "check_decl_kinds": os.environ.get("PALOMAR_CHECK_DECL_KINDS", "1"),
+}))
+PY
+)"
+  mkdir -p "$(dirname "$(palomar_report_path)")"
+  palomar_report_py init \
+    --project-root "$PALOMAR_PROJECT_ROOT" \
+    --toolkit-root "$toolkit" \
+    --options "$options"
+  export PALOMAR_REPORT_FAILED_PHASE=""
+  export PALOMAR_REPORT_EXIT_CODE=0
+  export PALOMAR_REPORT_MESSAGE=""
+}
+
+palomar_report_finalize() {
+  local ec="${PALOMAR_REPORT_EXIT_CODE:-$?}"
+  if [[ -z "${PALOMAR_REPORT_EXIT_CODE:-}" ]]; then
+    ec=$?
+  fi
+  palomar_report_py finalize \
+    --exit-code "$ec" \
+    --failed-phase "${PALOMAR_REPORT_FAILED_PHASE:-}" \
+    --message "${PALOMAR_REPORT_MESSAGE:-}" \
+    --print-path 2>/dev/null || true
+}
+
+palomar_report_observe() {
+  local key="$1"
+  local value="$2"
+  palomar_report_py observe --key "$key" --value "$value"
+}
+
+palomar_report_skip_phase() {
+  local id="$1"
+  local reason="${2:-skipped}"
+  palomar_report_py phase-skip --id="$id" --reason="$reason"
+}
+
+# Run one preflight phase: print title, capture output, record pass/fail.
+# Usage: palomar_run_phase PHASE_ID "Title" [abort_on_fail=1] command...
+# Set abort_on_fail=0 to record failure but continue (type_compare).
+palomar_run_phase() {
+  local phase_id="$1"
+  local title="$2"
+  local abort="${3:-1}"
+  shift 3
+  local out_file ec
+  out_file="$(mktemp)"
+  palomar_report_py phase-start --id "$phase_id" --title "$title"
+  printf '\n== %s ==\n' "$title"
+  set +e
+  "$@" > >(tee "$out_file") 2>&1
+  ec=$?
+  set -e
+  palomar_report_py phase-end --id "$phase_id" --exit-code "$ec" --output-file "$out_file"
+  rm -f "$out_file"
+  if [[ "$ec" -ne 0 ]]; then
+    export PALOMAR_REPORT_FAILED_PHASE="$phase_id"
+    export PALOMAR_REPORT_EXIT_CODE="$ec"
+    if [[ "$abort" == "1" ]]; then
+      exit "$ec"
+    fi
+  fi
+  return "$ec"
+}

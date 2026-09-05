@@ -5,6 +5,7 @@
 set -euo pipefail
 
 TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+export PALOMAR_TOOLKIT_ROOT="$TOOLKIT_ROOT"
 # shellcheck source=palomar-lib.sh
 source "$TOOLKIT_ROOT/palomar-lib.sh"
 export PYTHONPATH="$TOOLKIT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -30,6 +31,7 @@ Options:
   --extra-print-name N     Extra constant to #print in closure walk (repeatable)
   --mechanical-only        Skip policy sync and LLM editorial audit
   --no-policy-sync         Audit against committed vendor/palomar-policy only
+  --report-out PATH        Write preflight-run.json (default: .cache/palomar-editorial/preflight-run.json)
   -h, --help               Show this help
 
 Project wrappers typically exec this script with --project-root and --sorry-paths.
@@ -37,6 +39,8 @@ Optional scripts/palomar_preflight_local.sh runs extra mechanical checks.
 
 Full preflight requires CURSOR_API_KEY (or ../tokens_ssto.yaml) and runs Cursor
 editorial review: gpt-5.6-sol for substantive passes, composer-2.5 for lighter.
+
+Every run writes a structured phase report (JSON) suitable for overview tables.
 EOF
 }
 
@@ -69,6 +73,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mechanical-only) MECHANICAL_ONLY=1; shift ;;
     --no-policy-sync) NO_POLICY_SYNC=1; shift ;;
+    --report-out)
+      [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
+      export PALOMAR_REPORT_PATH="$2"
+      shift 2
+      ;;
     -h|--help) palomar_preflight_usage; exit 0 ;;
     --) shift; break ;;
     -*)
@@ -99,15 +108,16 @@ if [[ ${#PALOMAR_EXTRA_PRINT_NAMES[@]} -gt 0 ]]; then
   export PALOMAR_EXTRA_PRINT_NAMES="${PALOMAR_EXTRA_PRINT_NAMES[*]}"
 fi
 
+export PALOMAR_MECHANICAL_ONLY="$MECHANICAL_ONLY"
+export PALOMAR_NO_POLICY_SYNC="$NO_POLICY_SYNC"
+
 palomar_cd_project
 export PALOMAR_SORRY_PATHS="${PALOMAR_SORRY_PATHS:-Solution.lean}"
 
-step() {
-  printf '\n== %s ==\n' "$1"
-}
+palomar_report_init
+trap 'palomar_report_finalize' EXIT
 
-step "Validate Comparator configuration"
-python3 - <<'PY'
+palomar_run_phase comparator_config "Validate Comparator configuration" 1 python3 - <<'PY'
 import json
 import re
 
@@ -179,8 +189,7 @@ print(
 )
 PY
 
-step "Challenge import discipline (Mathlib only)"
-python3 - <<'PY'
+palomar_run_phase challenge_imports "Challenge import discipline (Mathlib only)" 1 python3 - <<'PY'
 import json
 import os
 import re
@@ -208,8 +217,7 @@ for imp in imports:
 print(f"OK: Challenge has {len(imports)} explicit import(s).")
 PY
 
-step "Challenge surface size limits"
-python3 - <<'PY'
+palomar_run_phase challenge_size "Challenge surface size limits" 1 python3 - <<'PY'
 from pathlib import Path
 
 path = Path("Challenge.lean")
@@ -222,7 +230,7 @@ if size >= 100 * 1024:
 print(f"OK: Challenge.lean is {lines} lines, {size} bytes.")
 PY
 
-step "Exactly one Lake manifest at repository root"
+palomar_run_phase lake_manifest "Exactly one Lake manifest at repository root" 1 bash -c '
 if [[ -f lakefile.toml && -f lakefile.lean ]]; then
   echo "FAIL: both lakefile.toml and lakefile.lean present."
   exit 1
@@ -240,35 +248,51 @@ if [[ ! -f lean-toolchain ]]; then
   exit 1
 fi
 echo "OK: Lake config, manifest, and toolchain present."
+'
 
-step "Reject git submodules (Palomar cannot preserve them)"
+palomar_run_phase no_submodules "Reject git submodules (Palomar cannot preserve them)" 1 bash -c '
 if [[ -e .gitmodules ]]; then
   echo "FAIL: .gitmodules is present; Palomar cannot preserve submodules."
   exit 1
 fi
 echo "OK: no .gitmodules."
+'
 
 if [[ -f scripts/palomar_preflight_local.sh ]]; then
-  step "Project-specific mechanical checks"
-  bash scripts/palomar_preflight_local.sh
+  palomar_run_phase local_checks "Project-specific mechanical checks" 1 \
+    bash scripts/palomar_preflight_local.sh
+else
+  palomar_report_skip_phase local_checks "no scripts/palomar_preflight_local.sh"
 fi
 
-step "Build Lean project"
-lake build 2>&1 | grep -vE 'LEAN_PATH|trace:' | tail -20
+palomar_run_phase lake_build "Build Lean project" 1 bash -c '
+  log="$(mktemp)"
+  trap "rm -f \"$log\"" EXIT
+  lake build 2>&1 | grep -vE "LEAN_PATH|trace:" | tee "$log"
+  ec=${PIPESTATUS[0]}
+  tail -20 "$log"
+  exit "$ec"
+'
 
-step "Compare Challenge/Solution types and declaration-closure values"
 compare_status=0
-PALOMAR_QUIET=1 bash "$TOOLKIT_ROOT/compare_challenge_solution_types.sh" || compare_status=$?
+palomar_run_phase type_compare \
+  "Compare Challenge/Solution types and declaration-closure values" \
+  0 env PALOMAR_QUIET=1 bash "$TOOLKIT_ROOT/compare_challenge_solution_types.sh" \
+  || compare_status=$?
 
-step "Run Palomar-pinned Comparator"
-bash "$TOOLKIT_ROOT/verify-comparator.sh"
+palomar_run_phase comparator "Run Palomar-pinned Comparator" 1 \
+  bash "$TOOLKIT_ROOT/verify-comparator.sh"
+
 if [[ "$compare_status" -ne 0 ]]; then
   echo "Pretty-print declaration-closure check also failed (exit ${compare_status})."
+  palomar_report_observe type_compare_deferred_failure true
+  export PALOMAR_REPORT_FAILED_PHASE="type_compare"
+  export PALOMAR_REPORT_EXIT_CODE="$compare_status"
+  export PALOMAR_REPORT_MESSAGE="Pretty-print declaration-closure check failed after Comparator passed."
   exit "$compare_status"
 fi
 
-step "Reject proof holes in Solution sources"
-python3 - <<'PY'
+palomar_run_phase sorry_scan "Reject proof holes in Solution sources" 1 python3 - <<'PY'
 import os
 import re
 from pathlib import Path
@@ -302,58 +326,20 @@ if hits:
 print(f"OK: scanned {len(files)} Solution proof file(s); no sorry/admit.")
 PY
 
-step "Check permitted theorem axioms"
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-python3 - "$tmp/Axioms.lean" <<'PY'
-import json
-import sys
+palomar_run_phase axioms "Check permitted theorem axioms" 1 \
+  bash "$TOOLKIT_ROOT/palomar_axioms_check.sh"
 
-with open("comparator.json", encoding="utf-8") as f:
-    cfg = json.load(f)
-with open(sys.argv[1], "w", encoding="utf-8") as out:
-    out.write(f"import {cfg['solution_module']}\n")
-    for name in cfg["theorem_names"]:
-        out.write(f"#print axioms {name}\n")
-PY
-lake env lean "$tmp/Axioms.lean" >"$tmp/axioms.txt"
-python3 - "$tmp/axioms.txt" <<'PY'
-import json
-import re
-import sys
-
-with open("comparator.json", encoding="utf-8") as f:
-    cfg = json.load(f)
-allowed = set(cfg["permitted_axioms"])
-theorems = cfg["theorem_names"]
-text = open(sys.argv[1], encoding="utf-8").read()
-reports = re.findall(
-    r"^'(.+)' depends on axioms: \[([^\]]*)\]$", text, re.MULTILINE
-)
-no_axioms = re.findall(
-    r"^'(.+)' does not depend on any axioms$", text, re.MULTILINE
-)
-reported = {name for name, _ in reports} | set(no_axioms)
-expected = set(theorems)
-if reported != expected:
-    missing = sorted(expected - reported)
-    extra = sorted(reported - expected)
-    raise SystemExit(f"Axiom report mismatch; missing={missing}, extra={extra}")
-for name, raw in reports:
-    used = {item.strip() for item in raw.split(",") if item.strip()}
-    forbidden = sorted(used - allowed)
-    if forbidden:
-        raise SystemExit(f"{name} uses forbidden axioms: {', '.join(forbidden)}")
-print(f"OK: all theorem targets use only {sorted(allowed)} (or no axioms).")
-PY
-
-step "Check patch formatting"
-git diff --check
+palomar_run_phase patch_format "Check patch formatting" 1 git diff --check
 
 if [[ "$MECHANICAL_ONLY" -eq 1 ]]; then
+  for phase_id in policy_sync editorial_prechecks mechanical_report editorial_audit; do
+    palomar_report_skip_phase "$phase_id" "mechanical-only"
+  done
   echo ""
   echo "OK: mechanical preflight passed (--mechanical-only; editorial audit skipped)."
   echo "NOTE: full Palomar preflight also runs vendored-policy sync and Cursor editorial audit (gpt-5.6-sol + composer-2.5)."
+  export PALOMAR_REPORT_EXIT_CODE=0
+  export PALOMAR_REPORT_MESSAGE="mechanical preflight passed (--mechanical-only)"
   exit 0
 fi
 
@@ -362,15 +348,16 @@ if [[ "$NO_POLICY_SYNC" -eq 1 ]]; then
   SYNC_ARGS+=(--no-sync)
 fi
 
-step "Sync PalomarPolicy to upstream latest"
-python3 "$TOOLKIT_ROOT/palomar_policy_sync.py" "${SYNC_ARGS[@]}"
+palomar_run_phase policy_sync "Sync PalomarPolicy to upstream latest" 1 \
+  python3 "$TOOLKIT_ROOT/palomar_policy_sync.py" "${SYNC_ARGS[@]}"
 
-step "Palomar editorial pre-checks"
-python3 "$TOOLKIT_ROOT/palomar_editorial_checks.py"
+palomar_run_phase editorial_prechecks "Palomar editorial pre-checks" 1 \
+  python3 "$TOOLKIT_ROOT/palomar_editorial_checks.py"
 
-step "Build local mechanical report"
-mkdir -p .cache/palomar-editorial
-python3 "$TOOLKIT_ROOT/palomar_mechanical_report.py" --out .cache/palomar-editorial/mechanical-report.json
+palomar_run_phase mechanical_report "Build local mechanical report" 1 bash -c '
+  mkdir -p .cache/palomar-editorial
+  python3 "$0/palomar_mechanical_report.py" --out .cache/palomar-editorial/mechanical-report.json
+' "$TOOLKIT_ROOT"
 
 if [[ -z "${CURSOR_API_KEY:-}" ]]; then
   for TOKENS in ../tokens_ssto.yaml tokens_ssto.yaml; do
@@ -384,12 +371,14 @@ if [[ -z "${CURSOR_API_KEY:-}" ]]; then
   done
 fi
 
-step "Palomar editorial audit (LLM, gpt-5.6-sol + composer-2.5)"
-bash "$TOOLKIT_ROOT/palomar_editorial_audit.sh" \
+palomar_run_phase editorial_audit "Palomar editorial audit (LLM, gpt-5.6-sol + composer-2.5)" 1 \
+  bash "$TOOLKIT_ROOT/palomar_editorial_audit.sh" \
   --policy-dir vendor/palomar-policy \
   --policy-pin "$(tr -d '[:space:]' < vendor/PALOMAR_POLICY_PIN)" \
   --mechanical-report .cache/palomar-editorial/mechanical-report.json \
   --out .cache/palomar-editorial/review-draft.json
 
+export PALOMAR_REPORT_EXIT_CODE=0
+export PALOMAR_REPORT_MESSAGE="full Palomar preflight passed (mechanical + editorial neutral)."
 echo ""
 echo "OK: full Palomar preflight passed (mechanical + editorial neutral)."
