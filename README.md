@@ -47,7 +47,7 @@ See `examples/project-wrapper.sh` and per-project copies under `examples/`.
 | qlambda | `QLambda Solution.lean` | `--forbidden-prefix QLambda` |
 | scott1964 | `Scott1964 Solution.lean` | — |
 | hybrid_logic_lean_revisited | `Hybrid Solution.lean` | — |
-| MizraCCL | `MizraCCL Solution.lean` | template in `examples/MizraCCL-palomar_preflight.sh` |
+| MizarCCL | `MizarCCL/HIDDEN.lean MizarCCL/TARSKI.lean Solution.lean` | `--closure-prefix` ×3; set `PALOMAR_CHECK_DECL_KINDS=0` |
 
 ## Direct invocation
 

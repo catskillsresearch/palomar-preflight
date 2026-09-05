@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Template for MizraCCL/scripts/palomar_preflight.sh (adjust sorry paths to match the library).
+# Template for MizarCCL/scripts/palomar_preflight.sh (Mizar-style comparator flags).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -22,5 +22,8 @@ find_toolkit() {
 TOOLKIT="$(find_toolkit "$ROOT")"
 exec bash "$TOOLKIT/palomar_preflight.sh" \
   --project-root "$ROOT" \
-  --sorry-paths "MizraCCL Solution.lean" \
+  --sorry-paths "MizarCCL/HIDDEN.lean MizarCCL/TARSKI.lean Solution.lean" \
+  --closure-prefix PreSet \
+  --closure-prefix TarskiSet \
+  --closure-prefix instMembership \
   "$@"
