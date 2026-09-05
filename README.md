@@ -5,8 +5,7 @@ editorial LLM audit used before submission.
 
 **Canonical layout:** keep this repository as a **sibling** of each Lean project
 (`../palomar-preflight`) and invoke it through a thin project wrapper with
-CLI flags. Legacy `vendor/palomar-preflight/` copies still work as a fallback
-but should not be edited in place.
+CLI flags. CI checks out this repo into `palomar-preflight/` inside each project.
 
 Palomar rejects `.gitmodules`. Registry verification itself runs Comparator from
 PalomarSubmission — not this repo — but `verify-comparator.sh` here uses the
@@ -24,8 +23,7 @@ find_toolkit() {
   local root="$1" d
   for d in "${PALOMAR_PREFLIGHT_ROOT:-}" \
     "$(dirname "$root")/palomar-preflight" \
-    "$root/palomar-preflight" \
-    "$root/vendor/palomar-preflight"; do
+    "$root/palomar-preflight"; do
     [[ -n "$d" && -f "$d/palomar_preflight.sh" ]] && { cd "$d" && pwd; return 0; }
   done
   echo "error: palomar-preflight not found" >&2; return 1
@@ -112,15 +110,10 @@ bash scripts/palomar_preflight.sh                     # before Palomar submit
 Mechanical includes Palomar-pinned Comparator (`verify-comparator.sh`):
 declaration-closure Const matching, axiom checks, and Lean kernel replay.
 
-## Refresh legacy vendor copies
+## Refresh policy pin
 
-```bash
-python3 /path/to/palomar-preflight/palomar_preflight_sync.py --from-dir /path/to/palomar-preflight
-# or, after this repo is on GitHub:
-python3 vendor/palomar-preflight/palomar_preflight_sync.py
-```
-
-Pin file: `vendor/PALOMAR_PREFLIGHT_PIN`.
+Policy still lives in each project's `vendor/palomar-policy/`. Preflight syncs
+that tree on full runs via `palomar_policy_sync.py` in this toolkit.
 
 ## License
 
