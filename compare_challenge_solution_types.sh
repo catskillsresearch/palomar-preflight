@@ -161,29 +161,10 @@ def add(name: str) -> None:
         seen.add(name)
         ordered.append(name)
 
-try:
-    challenge_lean = open("Challenge.lean", encoding="utf-8").read()
-except OSError:
-    challenge_lean = ""
-
-
-def def_is_sorry_in_challenge(short: str) -> bool:
-    if not challenge_lean:
-        return False
-    pat = re.compile(
-        rf"(?:^|\n)(?:private\s+|protected\s+|noncomputable\s+)?def\s+{re.escape(short)}\b"
-        rf"(?:(?!^(?:private\s+|protected\s+|noncomputable\s+)?"
-        rf"(?:def|theorem|structure|inductive|abbrev|namespace|end)\b)[\s\S])*?"
-        rf":=\s*sorry\b",
-        re.MULTILINE,
-    )
-    return bool(pat.search(challenge_lean))
-
-
-for name in cfg.get("definition_names", []):
-    short = name.rsplit(".", 1)[-1]
-    if not def_is_sorry_in_challenge(short):
-        add(name)
+# Comparator treats every explicit definition target as a hole: it compares
+# only ConstantVal (name, level parameters, and type) plus safety, regardless
+# of whether Challenge gives that declaration a concrete body. Never seed the
+# transitive body walk with definition_names.
 for extra in os.environ.get("PALOMAR_EXTRA_PRINT_NAMES", "").split():
     add(extra)
 for path in sys.argv[1:]:
