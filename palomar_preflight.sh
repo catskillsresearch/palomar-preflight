@@ -13,6 +13,7 @@ export PYTHONPATH="$TOOLKIT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 MECHANICAL_ONLY=0
 EDITORIAL_ONLY=0
+ALLOW_DIRTY=0
 NO_POLICY_SYNC=0
 PALOMAR_FORBIDDEN_PREFIXES=()
 PALOMAR_CLOSURE_PREFIXES=()
@@ -33,6 +34,7 @@ Options:
   --extra-print-name N     Extra constant to #print in closure walk (repeatable)
   --mechanical-only        Skip policy sync and LLM editorial audit
   --editorial-only         Skip mechanical phases; run policy sync and LLM audit
+  --allow-dirty            Pin HEAD even if Challenge/comparator files are dirty
   --no-policy-sync         Audit against committed vendor/palomar-policy only
   --report-out PATH        Write preflight-run.json (default: .cache/palomar-editorial/preflight-run.json)
   -h, --help               Show this help
@@ -77,6 +79,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mechanical-only) MECHANICAL_ONLY=1; shift ;;
     --editorial-only) EDITORIAL_ONLY=1; shift ;;
+    --allow-dirty) ALLOW_DIRTY=1; shift ;;
     --no-policy-sync) NO_POLICY_SYNC=1; shift ;;
     --report-out)
       [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
@@ -120,6 +123,7 @@ fi
 
 export PALOMAR_MECHANICAL_ONLY="$MECHANICAL_ONLY"
 export PALOMAR_EDITORIAL_ONLY="$EDITORIAL_ONLY"
+export PALOMAR_ALLOW_DIRTY="$ALLOW_DIRTY"
 export PALOMAR_NO_POLICY_SYNC="$NO_POLICY_SYNC"
 
 palomar_cd_project
@@ -387,10 +391,14 @@ palomar_run_phase policy_sync "Sync PalomarPolicy to upstream latest" 1 \
 palomar_run_phase editorial_prechecks "Palomar editorial pre-checks" 1 \
   python3 "$TOOLKIT_ROOT/palomar_editorial_checks.py"
 
+MECH_REPORT_ARGS=(--out .cache/palomar-editorial/mechanical-report.json)
+if [[ "$ALLOW_DIRTY" -eq 1 ]]; then
+  MECH_REPORT_ARGS+=(--allow-dirty)
+fi
 palomar_run_phase mechanical_report "Build local mechanical report" 1 bash -c '
   mkdir -p .cache/palomar-editorial
-  python3 "$0/palomar_mechanical_report.py" --out .cache/palomar-editorial/mechanical-report.json
-' "$TOOLKIT_ROOT"
+  python3 "$0/palomar_mechanical_report.py" "$@"
+' "$TOOLKIT_ROOT" "${MECH_REPORT_ARGS[@]}"
 
 if [[ -z "${CURSOR_API_KEY:-}" ]]; then
   for TOKENS in ../tokens_ssto.yaml tokens_ssto.yaml; do

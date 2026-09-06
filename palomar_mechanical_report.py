@@ -39,6 +39,28 @@ def git_head() -> str | None:
         return None
 
 
+def dirty_relative_to_head(paths: list[Path]) -> list[str]:
+    """Working-tree paths that differ from HEAD (the commit the audit will pin)."""
+    rels = []
+    for path in paths:
+        try:
+            rels.append(str(path.resolve().relative_to(ROOT.resolve())))
+        except ValueError:
+            rels.append(str(path))
+    if not rels:
+        return []
+    try:
+        out = subprocess.check_output(
+            ["git", "diff", "--name-only", "HEAD", "--", *rels],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+    return [line for line in out.splitlines() if line]
+
+
 def challenge_imports() -> list[str]:
     text = (ROOT / "Challenge.lean").read_text(encoding="utf-8")
     return re.findall(r"^import\s+(\S+)", text, re.MULTILINE)
@@ -49,7 +71,7 @@ def load_comparator() -> dict:
         return json.load(f)
 
 
-def build_report() -> dict:
+def build_report(*, allow_dirty: bool = False) -> dict:
     cfg = load_comparator()
     commit = git_head()
     theorems = cfg["theorem_names"]
@@ -65,6 +87,18 @@ def build_report() -> dict:
         paths["lakefile.toml"] = ROOT / "lakefile.toml"
     elif (ROOT / "lakefile.lean").is_file():
         paths["lakefile.lean"] = ROOT / "lakefile.lean"
+
+    dirty = dirty_relative_to_head(list(paths.values()))
+    if dirty and not allow_dirty:
+        listed = "\n".join(f"  {name}" for name in dirty)
+        raise SystemExit(
+            "FAIL: editorial report would pin HEAD "
+            f"({commit or 'unknown'}), but these files differ from that commit:\n"
+            f"{listed}\n"
+            "Commit (or restore) them first. The LLM audit reads the pinned "
+            "commit, so a dirty Challenge/comparator looks like a pin mismatch.\n"
+            "Override with --allow-dirty only for local experiments."
+        )
 
     return {
         "schema": "palomar-local-mechanical-report-v1",
@@ -93,8 +127,13 @@ def build_report() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Pin HEAD even if Challenge/comparator/metadata differ from that commit",
+    )
     args = parser.parse_args()
-    report = build_report()
+    report = build_report(allow_dirty=args.allow_dirty)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     decl_count = len(report["declarations_checked_order"])

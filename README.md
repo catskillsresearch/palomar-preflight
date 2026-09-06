@@ -67,6 +67,7 @@ Options:
 | `--extra-print-name N` | Extra `#print` name for closure walk |
 | `--mechanical-only` | Skip policy sync + LLM editorial audit |
 | `--editorial-only` | Skip mechanical phases; run policy sync + LLM audit |
+| `--allow-dirty` | Pin HEAD even if Challenge/comparator/metadata differ from that commit |
 | `--no-policy-sync` | Use committed `vendor/palomar-policy` only |
 | `--report-out PATH` | Structured run report (default: `.cache/palomar-editorial/preflight-run.json`) |
 
@@ -116,6 +117,11 @@ bash scripts/palomar_preflight.sh --mechanical-only   # CI
 bash scripts/palomar_preflight.sh                     # before Palomar submit
 bash scripts/palomar_preflight.sh --editorial-only    # retry LLM audit only
 ```
+
+Editorial audit pins `git rev-parse HEAD`. If Challenge, `comparator.json`, or
+`formalization.yaml` differ from that commit, the mechanical-report step fails
+instead of sending the LLM a mixed working-tree / pinned-commit packet. Commit
+first, or pass `--allow-dirty` only for experiments.
 
 Mechanical includes Palomar-pinned Comparator (`verify-comparator.sh`):
 declaration-closure Const matching, axiom checks, and Lean kernel replay.
