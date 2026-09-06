@@ -66,6 +66,7 @@ Options:
 | `--closure-prefix P` | Extra namespace prefix for declaration-closure walk |
 | `--extra-print-name N` | Extra `#print` name for closure walk |
 | `--mechanical-only` | Skip policy sync + LLM editorial audit |
+| `--editorial-only` | Skip mechanical phases; run policy sync + LLM audit |
 | `--no-policy-sync` | Use committed `vendor/palomar-policy` only |
 | `--report-out PATH` | Structured run report (default: `.cache/palomar-editorial/preflight-run.json`) |
 
@@ -79,6 +80,13 @@ Environment overrides (optional):
 | `PALOMAR_EXTRA_PRINT_NAMES` | Extra constants to `#print` during closure walk |
 | `PALOMAR_CHECK_DECL_KINDS` | Set to `0` if `theorem_names` includes defs (Mizar-style) |
 | `PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES` | Extra Challenge import bans |
+| `PALOMAR_EDITORIAL_PYTHON` | Python with `cursor-sdk` for the LLM audit (skips venv create) |
+
+The editorial audit looks for `cursor_sdk` in this order: `PALOMAR_EDITORIAL_PYTHON`,
+`$VIRTUAL_ENV/bin/python`, `<project>/.venv-editorial`, `<project>/.venv-ocr`,
+then sibling `*/.venv-editorial` and `*/.venv-ocr`. A project may symlink
+`.venv-editorial` to a shared install (for example `../scott1964/.venv-editorial`).
+A new venv is created only when none of those can `import cursor_sdk`.
 
 Optional `scripts/palomar_preflight_local.sh` in the Lean project runs extra
 mechanical checks (after submodule ban, before `lake build`).
@@ -106,6 +114,7 @@ bumping the toolkit.
 ```bash
 bash scripts/palomar_preflight.sh --mechanical-only   # CI
 bash scripts/palomar_preflight.sh                     # before Palomar submit
+bash scripts/palomar_preflight.sh --editorial-only    # retry LLM audit only
 ```
 
 Mechanical includes Palomar-pinned Comparator (`verify-comparator.sh`):
@@ -118,7 +127,7 @@ Every preflight run writes **`.cache/palomar-editorial/preflight-run.json`**
 
 - Per-phase status (`pass` / `fail` / `skip` / `not_run`), summary line, exit code,
   duration, and tail of captured output
-- Run options (`--mechanical-only`, sorry paths, closure prefixes, …)
+- Run options (`--mechanical-only`, `--editorial-only`, sorry paths, closure prefixes, …)
 - Repository and toolkit commits, overall exit code and failed phase
 - Paths to related artifacts (`comparator_last_run_log`, `review_draft`, …)
 - Editorial synthesis outcome when the LLM audit runs

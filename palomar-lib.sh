@@ -78,6 +78,7 @@ palomar_report_init() {
 import json, os
 print(json.dumps({
     "mechanical_only": os.environ.get("PALOMAR_MECHANICAL_ONLY") == "1",
+    "editorial_only": os.environ.get("PALOMAR_EDITORIAL_ONLY") == "1",
     "no_policy_sync": os.environ.get("PALOMAR_NO_POLICY_SYNC") == "1",
     "sorry_paths": os.environ.get("PALOMAR_SORRY_PATHS", "Solution.lean"),
     "forbidden_prefixes": os.environ.get("PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES", "").split(),

@@ -2,6 +2,7 @@
 # Palomar local preflight: mechanical Comparator checks + editorial LLM audit.
 # Mechanical runs Palomar's pinned Comparator so local/CI rejection matches
 # registry verification. Use --mechanical-only for CI without API calls.
+# Use --editorial-only to rerun policy sync and the LLM audit without rebuilding.
 set -euo pipefail
 
 TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -11,6 +12,7 @@ source "$TOOLKIT_ROOT/palomar-lib.sh"
 export PYTHONPATH="$TOOLKIT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 MECHANICAL_ONLY=0
+EDITORIAL_ONLY=0
 NO_POLICY_SYNC=0
 PALOMAR_FORBIDDEN_PREFIXES=()
 PALOMAR_CLOSURE_PREFIXES=()
@@ -30,6 +32,7 @@ Options:
   --closure-prefix P       Extra namespace prefix for declaration-closure walk
   --extra-print-name N     Extra constant to #print in closure walk (repeatable)
   --mechanical-only        Skip policy sync and LLM editorial audit
+  --editorial-only         Skip mechanical phases; run policy sync and LLM audit
   --no-policy-sync         Audit against committed vendor/palomar-policy only
   --report-out PATH        Write preflight-run.json (default: .cache/palomar-editorial/preflight-run.json)
   -h, --help               Show this help
@@ -39,6 +42,7 @@ Optional scripts/palomar_preflight_local.sh runs extra mechanical checks.
 
 Full preflight requires CURSOR_API_KEY (or ../tokens_ssto.yaml) and runs Cursor
 editorial review: gpt-5.6-sol for substantive passes, composer-2.5 for lighter.
+Use --editorial-only after a green mechanical run to retry the LLM audit only.
 
 Every run writes a structured phase report (JSON) suitable for overview tables.
 EOF
@@ -72,6 +76,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --mechanical-only) MECHANICAL_ONLY=1; shift ;;
+    --editorial-only) EDITORIAL_ONLY=1; shift ;;
     --no-policy-sync) NO_POLICY_SYNC=1; shift ;;
     --report-out)
       [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
@@ -108,7 +113,13 @@ if [[ ${#PALOMAR_EXTRA_PRINT_NAMES[@]} -gt 0 ]]; then
   export PALOMAR_EXTRA_PRINT_NAMES="${PALOMAR_EXTRA_PRINT_NAMES[*]}"
 fi
 
+if [[ "$MECHANICAL_ONLY" -eq 1 && "$EDITORIAL_ONLY" -eq 1 ]]; then
+  echo "error: --mechanical-only and --editorial-only are mutually exclusive" >&2
+  exit 2
+fi
+
 export PALOMAR_MECHANICAL_ONLY="$MECHANICAL_ONLY"
+export PALOMAR_EDITORIAL_ONLY="$EDITORIAL_ONLY"
 export PALOMAR_NO_POLICY_SYNC="$NO_POLICY_SYNC"
 
 palomar_cd_project
@@ -117,6 +128,26 @@ export PALOMAR_SORRY_PATHS="${PALOMAR_SORRY_PATHS:-Solution.lean}"
 palomar_report_init
 trap 'palomar_report_finalize' EXIT
 
+MECHANICAL_PHASE_IDS=(
+  comparator_config
+  challenge_imports
+  challenge_size
+  lake_manifest
+  no_submodules
+  local_checks
+  lake_build
+  type_compare
+  comparator
+  sorry_scan
+  axioms
+  patch_format
+)
+
+if [[ "$EDITORIAL_ONLY" -eq 1 ]]; then
+  for phase_id in "${MECHANICAL_PHASE_IDS[@]}"; do
+    palomar_report_skip_phase "$phase_id" "editorial-only"
+  done
+else
 palomar_run_phase comparator_config "Validate Comparator configuration" 1 python3 - <<'PY'
 import json
 import re
@@ -331,6 +362,8 @@ palomar_run_phase axioms "Check permitted theorem axioms" 1 \
 
 palomar_run_phase patch_format "Check patch formatting" 1 git diff --check
 
+fi
+
 if [[ "$MECHANICAL_ONLY" -eq 1 ]]; then
   for phase_id in policy_sync editorial_prechecks mechanical_report editorial_audit; do
     palomar_report_skip_phase "$phase_id" "mechanical-only"
@@ -379,6 +412,12 @@ palomar_run_phase editorial_audit "Palomar editorial audit (LLM, gpt-5.6-sol + c
   --out .cache/palomar-editorial/review-draft.json
 
 export PALOMAR_REPORT_EXIT_CODE=0
-export PALOMAR_REPORT_MESSAGE="full Palomar preflight passed (mechanical + editorial neutral)."
-echo ""
-echo "OK: full Palomar preflight passed (mechanical + editorial neutral)."
+if [[ "$EDITORIAL_ONLY" -eq 1 ]]; then
+  export PALOMAR_REPORT_MESSAGE="editorial preflight passed (--editorial-only; mechanical phases skipped)."
+  echo ""
+  echo "OK: editorial preflight passed (--editorial-only; mechanical phases skipped)."
+else
+  export PALOMAR_REPORT_MESSAGE="full Palomar preflight passed (mechanical + editorial neutral)."
+  echo ""
+  echo "OK: full Palomar preflight passed (mechanical + editorial neutral)."
+fi
