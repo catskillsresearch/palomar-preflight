@@ -82,6 +82,9 @@ Environment overrides (optional):
 | `PALOMAR_CHECK_DECL_KINDS` | Set to `0` if `theorem_names` includes defs (Mizar-style) |
 | `PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES` | Extra Challenge import bans |
 | `PALOMAR_EDITORIAL_PYTHON` | Python with `cursor-sdk` for the LLM audit (skips venv create) |
+| `PALOMAR_EDITORIAL_NO_RESUME` | Set to `1` to ignore cached successful editorial steps |
+| `PALOMAR_EDITORIAL_STEP_RETRIES` | Extra attempts after a crashed Cursor run (default `0`) |
+| `PALOMAR_EDITORIAL_ENABLE_TOOLS` | Set to `1` to give editorial agents the default local toolset |
 
 The editorial audit looks for `cursor_sdk` in this order: `PALOMAR_EDITORIAL_PYTHON`,
 `$VIRTUAL_ENV/bin/python`, `<project>/.venv-editorial`, `<project>/.venv-ocr`,
@@ -117,6 +120,13 @@ bash scripts/palomar_preflight.sh --mechanical-only   # CI
 bash scripts/palomar_preflight.sh                     # before Palomar submit
 bash scripts/palomar_preflight.sh --editorial-only    # retry LLM audit only
 ```
+
+Editorial steps are JSON-only Cursor runs (`tools=[]`). A finished step is cached under
+`.cache/palomar-editorial/steps/` against HEAD, the policy pin, and a hash of the
+compared sources. `--editorial-only` after a mid-audit crash resumes those steps
+instead of re-paying `classification` / `metadata`. A crashed `gpt-5.6-sol` run
+writes `.cache/palomar-editorial/last-cursor-failure.json` with run id, duration,
+and usage. Set `PALOMAR_EDITORIAL_NO_RESUME=1` for a clean audit.
 
 Editorial audit pins `git rev-parse HEAD`. If Challenge, `comparator.json`, or
 `formalization.yaml` differ from that commit, the mechanical-report step fails

@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from palomar_paths import project_root
 
 ROOT = project_root()
+CACHE_DIR = ROOT / ".cache/palomar-editorial"
+STEPS_DIR = CACHE_DIR / "steps"
+FAILURE_DUMP = CACHE_DIR / "last-cursor-failure.json"
 
 # Palomar production editorial content uses gpt-5.6-sol; lighter passes use composer-2.5.
 PRIMARY_MODEL = "gpt-5.6-sol"
@@ -120,6 +123,131 @@ def model_for_step(step_id: str) -> str:
     return PRIMARY_MODEL
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    to_json = getattr(value, "to_json", None)
+    if callable(to_json):
+        try:
+            return to_json()
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return str(value)
+
+
+def evidence_fingerprint() -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    for rel in (
+        "Challenge.lean",
+        "formalization.yaml",
+        "comparator.json",
+        "README.md",
+        "PROVENANCE.md",
+        "Solution.lean",
+    ):
+        path = ROOT / rel
+        digest.update(rel.encode())
+        digest.update(b"\0")
+        if path.is_file():
+            digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def step_cache_path(step_id: str) -> Path:
+    return STEPS_DIR / f"{step_id}.json"
+
+
+def load_cached_step(step_id: str, commit: str, policy_pin: str, fingerprint: str) -> dict | None:
+    if _env_flag("PALOMAR_EDITORIAL_NO_RESUME"):
+        return None
+    path = step_cache_path(step_id)
+    if not path.is_file():
+        return None
+    try:
+        doc = load_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    result = doc.get("result")
+    if not isinstance(result, dict):
+        return None
+    if (
+        doc.get("step") != step_id
+        or doc.get("commit") != commit
+        or doc.get("policy_pin") != policy_pin
+        or doc.get("fingerprint") != fingerprint
+    ):
+        return None
+    return result
+
+
+def save_cached_step(
+    step_id: str, commit: str, policy_pin: str, fingerprint: str, model: str, result: dict
+) -> None:
+    STEPS_DIR.mkdir(parents=True, exist_ok=True)
+    step_cache_path(step_id).write_text(
+        json.dumps(
+            {
+                "commit": commit,
+                "policy_pin": policy_pin,
+                "fingerprint": fingerprint,
+                "step": step_id,
+                "model": model,
+                "result": result,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def dump_cursor_failure(model: str, result: Any, extra: dict[str, Any] | None = None) -> Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model": model,
+        "id": getattr(result, "id", None),
+        "agent_id": getattr(result, "agent_id", None),
+        "status": str(getattr(result, "status", None)),
+        "result": getattr(result, "result", None),
+        "duration_ms": getattr(result, "duration_ms", None),
+        "created_at": getattr(result, "created_at", None),
+        "usage": _jsonable(getattr(result, "usage", None)),
+        "git": _jsonable(getattr(result, "git", None)),
+        "extra": _jsonable(extra or {}),
+    }
+    FAILURE_DUMP.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return FAILURE_DUMP
+
+
+def format_cursor_failure(model: str, result: Any) -> str:
+    return (
+        f"FAIL: Cursor run did not finish ({model}): "
+        f"status={result.status} run={result.id} agent={result.agent_id} "
+        f"duration_ms={result.duration_ms} result={result.result!r}"
+    )
+
+
 def cursor_prompt(api_key: str, model: str, system: str, user: str) -> str:
     from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions
 
@@ -127,24 +255,58 @@ def cursor_prompt(api_key: str, model: str, system: str, user: str) -> str:
         f"{system.strip()}\n\n---\n\n{user.strip()}\n\n"
         "Respond with one bare JSON object only. No markdown fences or surrounding prose."
     )
-    try:
-        result = Agent.prompt(
-            prompt,
-            AgentOptions(
+    retries = max(0, _env_int("PALOMAR_EDITORIAL_STEP_RETRIES", 0))
+    disable_tools = not _env_flag("PALOMAR_EDITORIAL_ENABLE_TOOLS")
+    last_message = f"FAIL: Cursor run did not finish ({model})"
+
+    for attempt in range(retries + 1):
+        try:
+            options = AgentOptions(
                 api_key=api_key,
                 model=model,
                 local=LocalAgentOptions(cwd=str(ROOT)),
-            ),
-        )
-    except CursorAgentError as err:
-        raise SystemExit(f"FAIL: Cursor API error ({model}): {err.message}") from err
-    if result.status != "finished":
-        detail = getattr(result, "result", None) or getattr(result, "error", None) or result.status
-        raise SystemExit(f"FAIL: Cursor run did not finish ({model}): {detail}")
-    body = (result.result or "").strip()
-    if not body:
-        raise SystemExit(f"FAIL: empty Cursor response ({model})")
-    return body
+                tools=[] if disable_tools else None,
+            )
+            agent = Agent.create(options)
+        except CursorAgentError as err:
+            if disable_tools and "tools" in (err.message or "").lower() and attempt == 0:
+                print(f"NOTE: tools=[] rejected ({model}); retrying with default toolset", file=sys.stderr)
+                disable_tools = False
+                continue
+            raise SystemExit(f"FAIL: Cursor API error ({model}): {err.message}") from err
+        extra: dict[str, Any] = {}
+        try:
+            run = agent.send(prompt)
+            result = run.wait()
+            if str(result.status) != "finished" and hasattr(run, "supports"):
+                try:
+                    if run.supports("conversation"):
+                        extra["conversation"] = run.conversation()
+                except Exception as conv_err:
+                    extra["conversation_error"] = str(conv_err)
+        except CursorAgentError as err:
+            last_message = f"FAIL: Cursor API error ({model}): {err.message}"
+            if attempt < retries:
+                print(f"RETRY: {last_message}", file=sys.stderr)
+                continue
+            raise SystemExit(last_message) from err
+        finally:
+            agent.close()
+
+        if str(result.status) == "finished":
+            body = (result.result or "").strip()
+            if body:
+                return body
+            last_message = f"FAIL: empty Cursor response ({model}) run={result.id}"
+        else:
+            dump_cursor_failure(model, result, extra)
+            last_message = format_cursor_failure(model, result)
+            print(f"{last_message}\n  dump: {FAILURE_DUMP}", file=sys.stderr)
+        if attempt < retries:
+            print(f"RETRY: {model} attempt {attempt + 2}/{retries + 1}", file=sys.stderr)
+            continue
+        raise SystemExit(last_message)
+    raise SystemExit(last_message)
 
 
 def load_comparator() -> dict:
@@ -369,7 +531,14 @@ def main() -> int:
     parser.add_argument("--policy-pin", required=True)
     parser.add_argument("--mechanical-report", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore cached successful editorial steps for this commit.",
+    )
     args = parser.parse_args()
+    if args.no_resume:
+        os.environ["PALOMAR_EDITORIAL_NO_RESUME"] = "1"
 
     api_key = load_cursor_api_key()
     policy_dir = args.policy_dir
@@ -378,6 +547,8 @@ def main() -> int:
     mechanical = load_json(args.mechanical_report)
     cfg = load_comparator()
     formalization_yaml = read_text(ROOT / "formalization.yaml")
+    repo_commit = str(mechanical.get("repository", {}).get("commit") or "unknown")
+    fingerprint = evidence_fingerprint()
 
     proof_texts = [
         read_text(ROOT / "Challenge.lean", 40_000),
@@ -396,19 +567,33 @@ def main() -> int:
             print(f"SKIP: {step['id']} (no informal proof account detected)")
             continue
         model = model_for_step(step["id"])
+        cached = load_cached_step(step["id"], repo_commit, args.policy_pin, fingerprint)
+        if cached is not None:
+            print(f"RESUME: editorial step {step['id']} ({model}, cached)")
+            step_results.append(cached)
+            models_by_step[step["id"]] = model
+            print(f"  outcome={cached['outcome']} summary={cached['summary'][:120]}")
+            continue
         print(f"RUN: editorial step {step['id']} ({model}) …")
         result, used_model = run_step(
             step, policy_dir, materiality, cfg, mechanical, step_results, api_key, formalization_yaml
         )
+        save_cached_step(step["id"], repo_commit, args.policy_pin, fingerprint, used_model, result)
         step_results.append(result)
         models_by_step[step["id"]] = used_model
         print(f"  outcome={result['outcome']} summary={result['summary'][:120]}")
 
     synth_model = model_for_step("synthesis")
-    print(f"RUN: editorial synthesis ({synth_model}) …")
-    synthesis, used_synth_model = run_synthesis(
-        policy_dir, materiality, step_results, mechanical, api_key
-    )
+    cached_synth = load_cached_step("synthesis", repo_commit, args.policy_pin, fingerprint)
+    if cached_synth is not None:
+        print(f"RESUME: editorial synthesis ({synth_model}, cached)")
+        synthesis, used_synth_model = cached_synth, synth_model
+    else:
+        print(f"RUN: editorial synthesis ({synth_model}) …")
+        synthesis, used_synth_model = run_synthesis(
+            policy_dir, materiality, step_results, mechanical, api_key
+        )
+        save_cached_step("synthesis", repo_commit, args.policy_pin, fingerprint, used_synth_model, synthesis)
     models_by_step["synthesis"] = used_synth_model
     syn_errors = validate_synthesis(synthesis, step_results, rubric)
     if syn_errors:
