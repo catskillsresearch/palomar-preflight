@@ -15,6 +15,8 @@ MECHANICAL_ONLY=0
 EDITORIAL_ONLY=0
 ALLOW_DIRTY=0
 NO_POLICY_SYNC=0
+SKIP_EDITORIAL_IF_POLICY_UNCHANGED=0
+PRIOR_REPORT_SNAPSHOT=""
 PALOMAR_FORBIDDEN_PREFIXES=()
 PALOMAR_CLOSURE_PREFIXES=()
 PALOMAR_EXTRA_PRINT_NAMES=()
@@ -36,6 +38,10 @@ Options:
   --editorial-only         Skip mechanical phases; run policy sync and LLM audit
   --allow-dirty            Pin HEAD even if Challenge/comparator files are dirty
   --no-policy-sync         Audit against committed vendor/palomar-policy only
+  --skip-editorial-if-policy-unchanged
+                           Reuse prior editorial audit when LLM prompts/rubric unchanged
+  --prior-run PATH         Prior preflight-run.json for --skip-editorial-if-policy-unchanged
+                           (default: .cache/palomar-editorial/preflight-run.json)
   --report-out PATH        Write preflight-run.json (default: .cache/palomar-editorial/preflight-run.json)
   -h, --help               Show this help
 
@@ -81,6 +87,12 @@ while [[ $# -gt 0 ]]; do
     --editorial-only) EDITORIAL_ONLY=1; shift ;;
     --allow-dirty) ALLOW_DIRTY=1; shift ;;
     --no-policy-sync) NO_POLICY_SYNC=1; shift ;;
+    --skip-editorial-if-policy-unchanged) SKIP_EDITORIAL_IF_POLICY_UNCHANGED=1; shift ;;
+    --prior-run)
+      [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
+      PRIOR_REPORT_SNAPSHOT="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+      shift 2
+      ;;
     --report-out)
       [[ $# -ge 2 ]] || { echo "error: missing value for $1" >&2; exit 2; }
       export PALOMAR_REPORT_PATH="$2"
@@ -125,9 +137,19 @@ export PALOMAR_MECHANICAL_ONLY="$MECHANICAL_ONLY"
 export PALOMAR_EDITORIAL_ONLY="$EDITORIAL_ONLY"
 export PALOMAR_ALLOW_DIRTY="$ALLOW_DIRTY"
 export PALOMAR_NO_POLICY_SYNC="$NO_POLICY_SYNC"
+export PALOMAR_SKIP_EDITORIAL_IF_POLICY_UNCHANGED="$SKIP_EDITORIAL_IF_POLICY_UNCHANGED"
 
 palomar_cd_project
 export PALOMAR_SORRY_PATHS="${PALOMAR_SORRY_PATHS:-Solution.lean}"
+
+if [[ -z "$PRIOR_REPORT_SNAPSHOT" ]]; then
+  PRIOR_REPORT_SNAPSHOT="$PALOMAR_PROJECT_ROOT/.cache/palomar-editorial/preflight-run.json"
+fi
+if [[ "$SKIP_EDITORIAL_IF_POLICY_UNCHANGED" -eq 1 && -f "$PRIOR_REPORT_SNAPSHOT" ]]; then
+  _prior_snapshot="$(mktemp)"
+  cp "$PRIOR_REPORT_SNAPSHOT" "$_prior_snapshot"
+  PRIOR_REPORT_SNAPSHOT="$_prior_snapshot"
+fi
 
 palomar_report_init
 trap 'palomar_report_finalize' EXIT
@@ -388,42 +410,82 @@ fi
 palomar_run_phase policy_sync "Sync PalomarPolicy to upstream latest" 1 \
   python3 "$TOOLKIT_ROOT/palomar_policy_sync.py" "${SYNC_ARGS[@]}"
 
-palomar_run_phase editorial_prechecks "Palomar editorial pre-checks" 1 \
-  python3 "$TOOLKIT_ROOT/palomar_editorial_checks.py"
-
-MECH_REPORT_ARGS=(--out .cache/palomar-editorial/mechanical-report.json)
-if [[ "$ALLOW_DIRTY" -eq 1 ]]; then
-  MECH_REPORT_ARGS+=(--allow-dirty)
+REUSE_EDITORIAL=0
+EDITORIAL_SKIP_REASON=""
+if [[ "$SKIP_EDITORIAL_IF_POLICY_UNCHANGED" -eq 1 ]]; then
+  set +e
+  skip_out="$(python3 "$TOOLKIT_ROOT/palomar_policy_sync.py" \
+    --editorial-skip-check \
+    --root vendor/palomar-policy \
+    --prior-report "$PRIOR_REPORT_SNAPSHOT" 2>&1)"
+  skip_ec=$?
+  set -e
+  printf '%s\n' "$skip_out"
+  if [[ "$skip_ec" -eq 0 ]]; then
+    REUSE_EDITORIAL=1
+    EDITORIAL_SKIP_REASON="$(printf '%s\n' "$skip_out" | head -1 | sed 's/^OK: skip editorial — //')"
+  elif [[ "$skip_ec" -ne 2 ]]; then
+    exit "$skip_ec"
+  fi
 fi
-palomar_run_phase mechanical_report "Build local mechanical report" 1 bash -c '
-  mkdir -p .cache/palomar-editorial
-  python3 "$0/palomar_mechanical_report.py" "$@"
-' "$TOOLKIT_ROOT" "${MECH_REPORT_ARGS[@]}"
 
-if [[ -z "${CURSOR_API_KEY:-}" ]]; then
-  for TOKENS in ../tokens_ssto.yaml tokens_ssto.yaml; do
-    if [[ -f "$TOKENS" ]]; then
-      CURSOR_API_KEY="$(grep -E '^CURSOR_API_KEY:' "$TOKENS" | head -1 | sed -E 's/^CURSOR_API_KEY:[[:space:]]*//')"
-      if [[ -n "$CURSOR_API_KEY" ]]; then
-        export CURSOR_API_KEY
-        break
+if [[ "$REUSE_EDITORIAL" -eq 1 ]]; then
+  palomar_report_skip_phase editorial_prechecks "reused prior editorial ($EDITORIAL_SKIP_REASON)"
+  palomar_report_skip_phase mechanical_report "reused prior editorial ($EDITORIAL_SKIP_REASON)"
+  palomar_report_skip_phase editorial_audit "reused prior editorial ($EDITORIAL_SKIP_REASON)"
+  palomar_report_py inherit-prior \
+    --prior-report "$PRIOR_REPORT_SNAPSHOT" \
+    --reason "$EDITORIAL_SKIP_REASON"
+  echo ""
+  echo "OK: editorial reused from prior run ($EDITORIAL_SKIP_REASON)."
+else
+  palomar_run_phase editorial_prechecks "Palomar editorial pre-checks" 1 \
+    python3 "$TOOLKIT_ROOT/palomar_editorial_checks.py"
+
+  MECH_REPORT_ARGS=(--out .cache/palomar-editorial/mechanical-report.json)
+  if [[ "$ALLOW_DIRTY" -eq 1 ]]; then
+    MECH_REPORT_ARGS+=(--allow-dirty)
+  fi
+  palomar_run_phase mechanical_report "Build local mechanical report" 1 bash -c '
+    mkdir -p .cache/palomar-editorial
+    python3 "$0/palomar_mechanical_report.py" "$@"
+  ' "$TOOLKIT_ROOT" "${MECH_REPORT_ARGS[@]}"
+
+  if [[ -z "${CURSOR_API_KEY:-}" ]]; then
+    for TOKENS in ../tokens_ssto.yaml tokens_ssto.yaml; do
+      if [[ -f "$TOKENS" ]]; then
+        CURSOR_API_KEY="$(grep -E '^CURSOR_API_KEY:' "$TOKENS" | head -1 | sed -E 's/^CURSOR_API_KEY:[[:space:]]*//')"
+        if [[ -n "$CURSOR_API_KEY" ]]; then
+          export CURSOR_API_KEY
+          break
+        fi
       fi
-    fi
-  done
-fi
+    done
+  fi
 
-palomar_run_phase editorial_audit "Palomar editorial audit (LLM, gpt-5.6-sol + composer-2.5)" 1 \
-  bash "$TOOLKIT_ROOT/palomar_editorial_audit.sh" \
-  --policy-dir vendor/palomar-policy \
-  --policy-pin "$(tr -d '[:space:]' < vendor/PALOMAR_POLICY_PIN)" \
-  --mechanical-report .cache/palomar-editorial/mechanical-report.json \
-  --out .cache/palomar-editorial/review-draft.json
+  palomar_run_phase editorial_audit "Palomar editorial audit (LLM, gpt-5.6-sol + composer-2.5)" 1 \
+    bash "$TOOLKIT_ROOT/palomar_editorial_audit.sh" \
+    --policy-dir vendor/palomar-policy \
+    --policy-pin "$(tr -d '[:space:]' < vendor/PALOMAR_POLICY_PIN)" \
+    --mechanical-report .cache/palomar-editorial/mechanical-report.json \
+    --out .cache/palomar-editorial/review-draft.json
+fi
 
 export PALOMAR_REPORT_EXIT_CODE=0
 if [[ "$EDITORIAL_ONLY" -eq 1 ]]; then
-  export PALOMAR_REPORT_MESSAGE="editorial preflight passed (--editorial-only; mechanical phases skipped)."
+  if [[ "$REUSE_EDITORIAL" -eq 1 ]]; then
+    export PALOMAR_REPORT_MESSAGE="editorial reused from prior run (--editorial-only; policy prompts unchanged)."
+    echo ""
+    echo "OK: editorial reused from prior run (--editorial-only; policy prompts unchanged)."
+  else
+    export PALOMAR_REPORT_MESSAGE="editorial preflight passed (--editorial-only; mechanical phases skipped)."
+    echo ""
+    echo "OK: editorial preflight passed (--editorial-only; mechanical phases skipped)."
+  fi
+elif [[ "$REUSE_EDITORIAL" -eq 1 ]]; then
+  export PALOMAR_REPORT_MESSAGE="full Palomar preflight passed (mechanical fresh; editorial reused — policy prompts unchanged)."
   echo ""
-  echo "OK: editorial preflight passed (--editorial-only; mechanical phases skipped)."
+  echo "OK: full Palomar preflight passed (mechanical fresh; editorial reused — policy prompts unchanged)."
 else
   export PALOMAR_REPORT_MESSAGE="full Palomar preflight passed (mechanical + editorial neutral)."
   echo ""

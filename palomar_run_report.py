@@ -248,6 +248,42 @@ def cmd_observe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_inherit_prior(args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    prior_path = Path(args.prior_report)
+    report = load_report(out)
+    if not prior_path.is_file():
+        print(f"error: no prior report at {prior_path}", file=sys.stderr)
+        return 1
+    try:
+        prior = json.loads(prior_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as err:
+        print(f"error: could not read prior report: {err}", file=sys.stderr)
+        return 1
+
+    prior_obs = prior.get("observations") or {}
+    observations = report.setdefault("observations", {})
+    for key in ("policy_pin", "policy_prompts_fingerprint", "editorial"):
+        if key in prior_obs:
+            observations[key] = prior_obs[key]
+
+    prior_artifacts = prior.get("artifacts") or {}
+    artifacts = report.setdefault("artifacts", {})
+    for key in ("review_draft",):
+        if key in prior_artifacts:
+            artifacts[key] = prior_artifacts[key]
+
+    if args.reason:
+        observations["editorial_reused"] = {
+            "reason": args.reason,
+            "prior_finished_at": prior.get("finished_at"),
+            "prior_report": str(prior_path),
+        }
+
+    save_report(out, report)
+    return 0
+
+
 def cmd_artifact(args: argparse.Namespace) -> int:
     out = Path(args.out)
     report = load_report(out)
@@ -308,10 +344,18 @@ def cmd_finalize(args: argparse.Namespace) -> int:
             pass
 
     policy_pin = project_root / "vendor/PALOMAR_POLICY_PIN"
+    policy_root = project_root / "vendor/palomar-policy"
     if policy_pin.is_file():
         try:
             observations["policy_pin"] = policy_pin.read_text(encoding="utf-8").strip()
         except OSError:
+            pass
+    if policy_root.is_dir() and (policy_root / "rubric.json").is_file():
+        try:
+            from palomar_policy_sync import policy_prompts_fingerprint
+
+            observations["policy_prompts_fingerprint"] = policy_prompts_fingerprint(policy_root)
+        except (ImportError, OSError):
             pass
 
     review_path = project_root / ".cache/palomar-editorial/review-draft.json"
@@ -423,6 +467,11 @@ def main() -> int:
     p_obs.add_argument("--key", required=True)
     p_obs.add_argument("--value", required=True)
     p_obs.set_defaults(func=cmd_observe)
+
+    p_inherit = sub.add_parser("inherit-prior")
+    p_inherit.add_argument("--prior-report", required=True)
+    p_inherit.add_argument("--reason", default="")
+    p_inherit.set_defaults(func=cmd_inherit_prior)
 
     p_art = sub.add_parser("artifact")
     p_art.add_argument("--key", required=True)

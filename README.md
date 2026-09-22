@@ -69,6 +69,8 @@ Options:
 | `--editorial-only` | Skip mechanical phases; run policy sync + LLM audit |
 | `--allow-dirty` | Pin HEAD even if Challenge/comparator/metadata differ from that commit |
 | `--no-policy-sync` | Use committed `vendor/palomar-policy` only |
+| `--skip-editorial-if-policy-unchanged` | Reuse prior editorial audit when LLM prompts/rubric are unchanged (compares content fingerprint, not git pin) |
+| `--prior-run PATH` | Prior `preflight-run.json` for `--skip-editorial-if-policy-unchanged` (default: `.cache/palomar-editorial/preflight-run.json`) |
 | `--report-out PATH` | Structured run report (default: `.cache/palomar-editorial/preflight-run.json`) |
 
 Environment overrides (optional):

@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 UPSTREAM = "PalomarRegistry/PalomarPolicy"
 DEFAULT_BRANCH = "main"
@@ -30,6 +32,87 @@ POLICY_PATHS = [
     "taxonomies/classification-guide.md",
     "schemas/review.schema.json",
 ]
+
+# LLM editorial prompts + rubric (git pin can move without changing these).
+EDITORIAL_PROMPT_PATHS = [
+    "rubric.json",
+    "prompts/00-classification.md",
+    "prompts/01-metadata.md",
+    "prompts/02-statement-alignment.md",
+    "prompts/03-definition-fidelity.md",
+    "prompts/04-literature-notability.md",
+    "prompts/05-proof-account.md",
+    "prompts/06-synthesis.md",
+    "prompts/materiality.md",
+]
+
+
+def policy_prompts_fingerprint(root: Path) -> str:
+    digest = hashlib.sha256()
+    for rel in EDITORIAL_PROMPT_PATHS:
+        digest.update(rel.encode("utf-8"))
+        path = root / rel
+        if path.is_file():
+            digest.update(path.read_bytes())
+        else:
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def policy_prompts_fingerprint_at_pin(pin: str) -> str:
+    digest = hashlib.sha256()
+    for rel in EDITORIAL_PROMPT_PATHS:
+        digest.update(rel.encode("utf-8"))
+        url = f"{RAW_BASE}/{pin}/{rel}"
+        digest.update(fetch_text(url).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def prior_policy_prompts_fingerprint(prior_report: dict[str, Any]) -> str | None:
+    observations = prior_report.get("observations") or {}
+    stored = observations.get("policy_prompts_fingerprint")
+    if isinstance(stored, str) and stored:
+        return stored
+    pin = observations.get("policy_pin")
+    if not isinstance(pin, str) or not pin:
+        return None
+    try:
+        return policy_prompts_fingerprint_at_pin(pin.strip())
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+
+
+def editorial_skip_decision(prior_report_path: Path, policy_root: Path) -> tuple[str, str]:
+    """Return ('skip'|'run', human-readable reason)."""
+    if not prior_report_path.is_file():
+        return "run", "no prior preflight run report"
+
+    try:
+        prior_report = json.loads(prior_report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "run", "prior preflight run report is unreadable"
+
+    overall = prior_report.get("overall") or {}
+    if overall.get("status") != "pass":
+        return "run", "prior preflight run did not pass"
+
+    editorial_phase = (prior_report.get("phases") or {}).get("editorial_audit") or {}
+    if editorial_phase.get("status") != "pass":
+        return "run", "prior run has no successful editorial audit"
+
+    prior_fp = prior_policy_prompts_fingerprint(prior_report)
+    if not prior_fp:
+        return "run", "prior run has no policy prompt fingerprint"
+
+    if not policy_root.is_dir() or not (policy_root / "rubric.json").is_file():
+        return "run", "vendored policy is missing"
+
+    current_fp = policy_prompts_fingerprint(policy_root)
+    if current_fp != prior_fp:
+        return "run", f"policy prompts changed ({prior_fp[:12]} -> {current_fp[:12]})"
+
+    finished = prior_report.get("finished_at") or "unknown time"
+    return "skip", f"policy prompts unchanged since prior pass ({finished})"
 
 
 def fetch_json(url: str) -> dict:
@@ -116,16 +199,19 @@ def diff_summary(old_root: Path | None, new_root: Path, old_pin: str | None, new
     return lines
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Sync vendored PalomarPolicy from upstream.")
-    parser.add_argument("--root", type=Path, default=Path("vendor/palomar-policy"))
-    parser.add_argument("--pin", type=Path, default=Path("vendor/PALOMAR_POLICY_PIN"))
-    parser.add_argument(
-        "--no-sync",
-        action="store_true",
-        help="skip upstream check; require existing vendored policy",
-    )
-    args = parser.parse_args()
+def cmd_editorial_skip_check(args: argparse.Namespace) -> int:
+    action, reason = editorial_skip_decision(args.prior_report, args.root)
+    current_fp = policy_prompts_fingerprint(args.root)
+    if action == "skip":
+        print(f"OK: skip editorial — {reason}")
+        print(f"policy_prompts_fingerprint={current_fp}")
+        return 0
+    print(f"OK: run editorial — {reason}")
+    print(f"policy_prompts_fingerprint={current_fp}")
+    return 2
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
     root: Path = args.root
     pin_path: Path = args.pin
 
@@ -173,6 +259,32 @@ def main() -> int:
     if old_root and old_root.is_dir():
         shutil.rmtree(old_root, ignore_errors=True)
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Sync vendored PalomarPolicy from upstream.")
+    parser.add_argument("--root", type=Path, default=Path("vendor/palomar-policy"))
+    parser.add_argument("--pin", type=Path, default=Path("vendor/PALOMAR_POLICY_PIN"))
+    parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="skip upstream check; require existing vendored policy",
+    )
+    parser.add_argument(
+        "--editorial-skip-check",
+        action="store_true",
+        help="compare policy prompt fingerprint to a prior preflight run report",
+    )
+    parser.add_argument(
+        "--prior-report",
+        type=Path,
+        default=Path(".cache/palomar-editorial/preflight-run.json"),
+        help="prior preflight-run.json for --editorial-skip-check",
+    )
+    args = parser.parse_args()
+    if args.editorial_skip_check:
+        return cmd_editorial_skip_check(args)
+    return cmd_sync(args)
 
 
 if __name__ == "__main__":

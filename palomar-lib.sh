@@ -81,6 +81,7 @@ print(json.dumps({
     "editorial_only": os.environ.get("PALOMAR_EDITORIAL_ONLY") == "1",
     "allow_dirty": os.environ.get("PALOMAR_ALLOW_DIRTY") == "1",
     "no_policy_sync": os.environ.get("PALOMAR_NO_POLICY_SYNC") == "1",
+    "skip_editorial_if_policy_unchanged": os.environ.get("PALOMAR_SKIP_EDITORIAL_IF_POLICY_UNCHANGED") == "1",
     "sorry_paths": os.environ.get("PALOMAR_SORRY_PATHS", "Solution.lean"),
     "forbidden_prefixes": os.environ.get("PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES", "").split(),
     "closure_prefixes": os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split(),
