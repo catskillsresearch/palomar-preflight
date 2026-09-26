@@ -48,8 +48,8 @@ Options:
 Project wrappers typically exec this script with --project-root and --sorry-paths.
 Optional scripts/palomar_preflight_local.sh runs extra mechanical checks.
 
-Full preflight requires CURSOR_API_KEY (or ../tokens_ssto.yaml) and runs Cursor
-editorial review: gpt-5.6-sol for substantive passes, composer-2.5 for lighter.
+Full preflight requires an OpenAI key in ../openai_key.txt (or OPENAI_API_KEY)
+and runs the editorial review with gpt-6-sol.
 Use --editorial-only after a green mechanical run to retry the LLM audit only.
 
 Every run writes a structured phase report (JSON) suitable for overview tables.
@@ -246,15 +246,14 @@ print(
 )
 PY
 
-palomar_run_phase challenge_imports "Challenge import discipline (Mathlib only)" 1 python3 - <<'PY'
+palomar_run_phase challenge_imports "Challenge import discipline (Mathlib or Challenge)" 1 python3 - <<'PY'
 import json
 import os
 import re
 from pathlib import Path
 
-text = Path("Challenge.lean").read_text(encoding="utf-8")
-imports = re.findall(r"^import\s+(\S+)", text, re.MULTILINE)
 cfg = json.loads(Path("comparator.json").read_text(encoding="utf-8"))
+challenge_mod = cfg["challenge_module"]
 forbidden = {"Solution"}
 for name in cfg["theorem_names"] + cfg.get("definition_names", []):
     head = name.split(".", 1)[0]
@@ -262,16 +261,50 @@ for name in cfg["theorem_names"] + cfg.get("definition_names", []):
         forbidden.add(head)
 for extra in os.environ.get("PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES", "").split():
     forbidden.add(extra)
-for imp in imports:
-    head = imp.split(".", 1)[0]
-    if head in forbidden or imp.startswith("Solution"):
-        raise SystemExit(f"Forbidden Challenge import: {imp}")
-    if not (imp.startswith("Init") or imp.startswith("Std")
-            or imp.startswith("Lean") or imp.startswith("Mathlib")):
-        raise SystemExit(
-            f"Challenge import not allowlisted (Init/Mathlib/Std/Lean): {imp}"
-        )
-print(f"OK: Challenge has {len(imports)} explicit import(s).")
+
+import_re = re.compile(r"^import\s+(\S+)", re.MULTILINE)
+
+def allowed(imp):
+    return (
+        imp == challenge_mod
+        or imp.startswith(challenge_mod + ".")
+        or imp.startswith("Init")
+        or imp.startswith("Std")
+        or imp.startswith("Lean")
+        or imp.startswith("Mathlib")
+    )
+
+def module_file(mod):
+    rel = Path(*mod.split(".")).with_suffix(".lean")
+    return rel if rel.is_file() else None
+
+seen = set()
+stack = [challenge_mod]
+checked = 0
+while stack:
+    mod = stack.pop()
+    if mod in seen:
+        continue
+    seen.add(mod)
+    if not (mod == challenge_mod or mod.startswith(challenge_mod + ".")):
+        continue
+    path = module_file(mod)
+    if path is None:
+        raise SystemExit(f"Challenge module source missing: {mod}")
+    imports = import_re.findall(path.read_text(encoding="utf-8"))
+    checked += 1
+    for imp in imports:
+        head = imp.split(".", 1)[0]
+        if head in forbidden or imp.startswith("Solution"):
+            raise SystemExit(f"Forbidden Challenge import: {imp} (from {path})")
+        if not allowed(imp):
+            raise SystemExit(
+                "Challenge import not allowlisted "
+                f"(Init/Mathlib/Std/Lean or {challenge_mod}.*): {imp} (from {path})"
+            )
+        if imp == challenge_mod or imp.startswith(challenge_mod + "."):
+            stack.append(imp)
+print(f"OK: Challenge closure has {checked} project file(s).")
 PY
 
 palomar_run_phase challenge_size "Challenge surface size limits" 1 python3 - <<'PY'
@@ -396,7 +429,7 @@ if [[ "$MECHANICAL_ONLY" -eq 1 ]]; then
   done
   echo ""
   echo "OK: mechanical preflight passed (--mechanical-only; editorial audit skipped)."
-  echo "NOTE: full Palomar preflight also runs vendored-policy sync and Cursor editorial audit (gpt-5.6-sol + composer-2.5)."
+  echo "NOTE: full Palomar preflight also runs vendored-policy sync and an OpenAI editorial audit (gpt-6-sol)."
   export PALOMAR_REPORT_EXIT_CODE=0
   export PALOMAR_REPORT_MESSAGE="mechanical preflight passed (--mechanical-only)"
   exit 0
@@ -451,19 +484,19 @@ else
     python3 "$0/palomar_mechanical_report.py" "$@"
   ' "$TOOLKIT_ROOT" "${MECH_REPORT_ARGS[@]}"
 
-  if [[ -z "${CURSOR_API_KEY:-}" ]]; then
-    for TOKENS in ../tokens_ssto.yaml tokens_ssto.yaml; do
-      if [[ -f "$TOKENS" ]]; then
-        CURSOR_API_KEY="$(grep -E '^CURSOR_API_KEY:' "$TOKENS" | head -1 | sed -E 's/^CURSOR_API_KEY:[[:space:]]*//')"
-        if [[ -n "$CURSOR_API_KEY" ]]; then
-          export CURSOR_API_KEY
+  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    for KEYFILE in ../openai_key.txt openai_key.txt; do
+      if [[ -f "$KEYFILE" ]]; then
+        OPENAI_API_KEY="$(tr -d '[:space:]' < "$KEYFILE")"
+        if [[ -n "$OPENAI_API_KEY" ]]; then
+          export OPENAI_API_KEY
           break
         fi
       fi
     done
   fi
 
-  palomar_run_phase editorial_audit "Palomar editorial audit (LLM, gpt-5.6-sol + composer-2.5)" 1 \
+  palomar_run_phase editorial_audit "Palomar editorial audit (LLM, gpt-6-sol)" 1 \
     bash "$TOOLKIT_ROOT/palomar_editorial_audit.sh" \
     --policy-dir vendor/palomar-policy \
     --policy-pin "$(tr -d '[:space:]' < vendor/PALOMAR_POLICY_PIN)" \

@@ -1,2 +1,2 @@
-cursor-sdk
+openai
 pyyaml

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Editorial audit wrapper: cursor-sdk venv in the Lean project.
+# Editorial audit wrapper: OpenAI client, model gpt-6-sol.
 set -euo pipefail
 
 TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -10,15 +10,22 @@ export PYTHONPATH="$TOOLKIT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 venv_ready() {
   local py="$1"
-  [[ -n "$py" && -x "$py" ]] && "$py" -c "import cursor_sdk" 2>/dev/null
+  [[ -n "$py" && -x "$py" ]] && "$py" -c "import openai" 2>/dev/null
 }
 
-# Prefer an existing cursor-sdk interpreter. Search order:
+install_openai() {
+  local py="$1"
+  echo "editorial audit: installing openai into ${py%/bin/python}" >&2
+  "$py" -m pip install \
+    --index-url https://pypi.org/simple \
+    -r "$TOOLKIT_ROOT/requirements-editorial.txt" >&2
+}
+
+# Prefer an interpreter that can import openai. Search order:
 # PALOMAR_EDITORIAL_PYTHON, VIRTUAL_ENV, this project's .venv-editorial /
-# .venv-ocr, then sibling */.venv-editorial and */.venv-ocr (shared installs
-# and symlinks such as ../scott1964/.venv-editorial).
+# .venv-ocr, then sibling */.venv-editorial and */.venv-ocr.
 pick_python() {
-  local py parent d
+  local py parent
   parent="$(dirname "$PALOMAR_PROJECT_ROOT")"
   for py in \
     "${PALOMAR_EDITORIAL_PYTHON:-}" \
@@ -41,43 +48,50 @@ pick_python() {
       shopt -u nullglob
       return 0
     fi
+    if [[ -x "$py" ]]; then
+      install_openai "$py"
+      if venv_ready "$py"; then
+        echo "editorial audit: using $py" >&2
+        echo "$py"
+        shopt -u nullglob
+        return 0
+      fi
+    fi
   done
   shopt -u nullglob
 
-  if [[ -L "$PALOMAR_PROJECT_ROOT/.venv-editorial" ]]; then
-    echo "FAIL: $PALOMAR_PROJECT_ROOT/.venv-editorial is a symlink, but" >&2
-    echo "cursor_sdk is not importable there. Fix the link or set" >&2
-    echo "PALOMAR_EDITORIAL_PYTHON to a python that has cursor-sdk." >&2
+  if [[ -L "$PALOMAR_PROJECT_ROOT/.venv-editorial" && ! -x "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/python" ]]; then
+    echo "FAIL: $PALOMAR_PROJECT_ROOT/.venv-editorial is a broken symlink." >&2
+    echo "Set PALOMAR_EDITORIAL_PYTHON to a python that has the openai package." >&2
     return 1
   fi
 
   echo "editorial audit: creating $PALOMAR_PROJECT_ROOT/.venv-editorial" >&2
   python3 -m venv "$PALOMAR_PROJECT_ROOT/.venv-editorial"
-  # `pick_python` is consumed by command substitution; keep pip chatter off stdout.
-  # Use PyPI directly: global pip config may add broken extra indexes.
-  "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/pip" install \
-    --index-url https://pypi.org/simple \
-    -r "$TOOLKIT_ROOT/requirements-editorial.txt" >&2
+  install_openai "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/python"
   echo "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/python"
 }
 
-load_cursor_api_key() {
-  if [[ -n "${CURSOR_API_KEY:-}" ]]; then
+load_openai_api_key() {
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     return 0
   fi
-  local tokens
-  for tokens in "$PALOMAR_PROJECT_ROOT/../tokens_ssto.yaml" "$PALOMAR_PROJECT_ROOT/tokens_ssto.yaml"; do
-    if [[ -f "$tokens" ]]; then
-      CURSOR_API_KEY="$(grep -E '^CURSOR_API_KEY:' "$tokens" | head -1 | sed -E 's/^CURSOR_API_KEY:[[:space:]]*//')"
-      if [[ -n "$CURSOR_API_KEY" ]]; then
-        export CURSOR_API_KEY
+  local keyfile
+  for keyfile in \
+    "$PALOMAR_PROJECT_ROOT/../openai_key.txt" \
+    "$PALOMAR_PROJECT_ROOT/openai_key.txt" \
+    "$TOOLKIT_ROOT/../openai_key.txt"; do
+    if [[ -f "$keyfile" ]]; then
+      OPENAI_API_KEY="$(tr -d '[:space:]' < "$keyfile")"
+      if [[ -n "$OPENAI_API_KEY" ]]; then
+        export OPENAI_API_KEY
         return 0
       fi
     fi
   done
-  echo "FAIL: set CURSOR_API_KEY or add it to ../tokens_ssto.yaml" >&2
+  echo "FAIL: set OPENAI_API_KEY or put the key in ../openai_key.txt" >&2
   return 1
 }
 
-load_cursor_api_key
+load_openai_api_key
 exec "$(pick_python)" "$TOOLKIT_ROOT/palomar_editorial_audit.py" "$@"

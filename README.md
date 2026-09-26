@@ -123,12 +123,13 @@ bash scripts/palomar_preflight.sh                     # before Palomar submit
 bash scripts/palomar_preflight.sh --editorial-only    # retry LLM audit only
 ```
 
-Editorial steps are JSON-only Cursor runs (`tools=[]`). A finished step is cached under
+Editorial steps are JSON-only OpenAI Responses calls (`gpt-6-sol`). The key is
+read from `OPENAI_API_KEY` or `../openai_key.txt`. A finished step is cached under
 `.cache/palomar-editorial/steps/` against HEAD, the policy pin, and a hash of the
 compared sources. `--editorial-only` after a mid-audit crash resumes those steps
-instead of re-paying `classification` / `metadata`. A crashed `gpt-5.6-sol` run
-writes `.cache/palomar-editorial/last-cursor-failure.json` with run id, duration,
-and usage. Set `PALOMAR_EDITORIAL_NO_RESUME=1` for a clean audit.
+instead of re-paying `classification` / `metadata`. A failed call writes
+`.cache/palomar-editorial/last-openai-failure.json`. Set
+`PALOMAR_EDITORIAL_NO_RESUME=1` for a clean audit.
 
 Editorial audit pins `git rev-parse HEAD`. If Challenge, `comparator.json`, or
 `formalization.yaml` differ from that commit, the mechanical-report step fails

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run PalomarPolicy editorial rubric via Cursor SDK."""
+"""Run PalomarPolicy editorial rubric via the OpenAI API (gpt-6-sol)."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from palomar_paths import project_root
 ROOT = project_root()
 CACHE_DIR = ROOT / ".cache/palomar-editorial"
 STEPS_DIR = CACHE_DIR / "steps"
-FAILURE_DUMP = CACHE_DIR / "last-cursor-failure.json"
+FAILURE_DUMP = CACHE_DIR / "last-openai-failure.json"
 
-# Palomar production editorial content uses gpt-5.6-sol; lighter passes use composer-2.5.
-PRIMARY_MODEL = "gpt-5.6-sol"
-ECONOMY_MODEL = "composer-2.5"
+# Palomar's official editorial model. Every step uses it unless overridden.
+PRIMARY_MODEL = "gpt-6-sol"
+ECONOMY_MODEL = "gpt-6-sol"
 
 PRIMARY_STEPS = frozenset(
     {
@@ -37,11 +37,6 @@ ECONOMY_STEPS = frozenset(
         "metadata",
         "proof_account",
     }
-)
-
-TOKENS_CANDIDATES = (
-    ROOT.parent / "tokens_ssto.yaml",
-    ROOT / "tokens_ssto.yaml",
 )
 
 PROOF_ACCOUNT_TRIGGER = re.compile(
@@ -74,45 +69,31 @@ def parse_model_json(raw: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
-def load_cursor_api_key() -> str:
-    for name in ("CURSOR_API_KEY", "PALOMAR_CURSOR_API_KEY"):
+KEY_FILE_CANDIDATES = (
+    ROOT.parent / "openai_key.txt",
+    ROOT / "openai_key.txt",
+    Path(__file__).resolve().parent.parent / "openai_key.txt",
+)
+
+
+def load_openai_api_key() -> str:
+    for name in ("OPENAI_API_KEY", "PALOMAR_OPENAI_API_KEY"):
         value = os.environ.get(name, "").strip()
         if value:
             return value
-    for path in TOKENS_CANDIDATES:
-        key = _read_key_from_tokens_file(path)
+    tried: list[str] = []
+    for path in KEY_FILE_CANDIDATES:
+        tried.append(str(path))
+        if not path.is_file():
+            continue
+        key = path.read_text(encoding="utf-8").strip()
         if key:
             return key
-    tried = ", ".join(str(p) for p in TOKENS_CANDIDATES)
     raise SystemExit(
-        "FAIL: set CURSOR_API_KEY or add it to ../tokens_ssto.yaml for editorial audit.\n"
-        f"Looked for token files: {tried}\n"
-        f"Primary model: {PRIMARY_MODEL}; economy model: {ECONOMY_MODEL}."
+        "FAIL: set OPENAI_API_KEY or put the key in ../openai_key.txt for the editorial audit.\n"
+        f"Looked for key files: {', '.join(tried)}\n"
+        f"Editorial model: {PRIMARY_MODEL}."
     )
-
-
-def _read_key_from_tokens_file(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    text = path.read_text(encoding="utf-8")
-    for pattern in (
-        r"(?m)^CURSOR_API_KEY:\s*(\S+)",
-        r"(?m)^cursor_api_key:\s*(\S+)",
-    ):
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1).strip().strip("'\"")
-    try:
-        import yaml
-
-        data = yaml.safe_load(text)
-        if isinstance(data, dict):
-            key = (data.get("CURSOR_API_KEY") or data.get("cursor_api_key") or "").strip()
-            if key:
-                return key
-    except Exception:
-        pass
-    return None
 
 
 def model_for_step(step_id: str) -> str:
@@ -135,22 +116,6 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
-
-
-def _jsonable(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    to_json = getattr(value, "to_json", None)
-    if callable(to_json):
-        try:
-            return to_json()
-        except Exception:
-            pass
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    return str(value)
 
 
 def evidence_fingerprint() -> str:
@@ -222,86 +187,40 @@ def save_cached_step(
     )
 
 
-def dump_cursor_failure(model: str, result: Any, extra: dict[str, Any] | None = None) -> Path:
+def dump_openai_failure(model: str, message: str) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "model": model,
-        "id": getattr(result, "id", None),
-        "agent_id": getattr(result, "agent_id", None),
-        "status": str(getattr(result, "status", None)),
-        "result": getattr(result, "result", None),
-        "duration_ms": getattr(result, "duration_ms", None),
-        "created_at": getattr(result, "created_at", None),
-        "usage": _jsonable(getattr(result, "usage", None)),
-        "git": _jsonable(getattr(result, "git", None)),
-        "extra": _jsonable(extra or {}),
-    }
-    FAILURE_DUMP.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    FAILURE_DUMP.write_text(
+        json.dumps({"model": model, "error": message}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return FAILURE_DUMP
 
 
-def format_cursor_failure(model: str, result: Any) -> str:
-    return (
-        f"FAIL: Cursor run did not finish ({model}): "
-        f"status={result.status} run={result.id} agent={result.agent_id} "
-        f"duration_ms={result.duration_ms} result={result.result!r}"
-    )
+def openai_prompt(api_key: str, model: str, system: str, user: str) -> str:
+    from openai import OpenAI, APIError
 
-
-def cursor_prompt(api_key: str, model: str, system: str, user: str) -> str:
-    from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions
-
-    prompt = (
-        f"{system.strip()}\n\n---\n\n{user.strip()}\n\n"
-        "Respond with one bare JSON object only. No markdown fences or surrounding prose."
-    )
+    client = OpenAI(api_key=api_key)
     retries = max(0, _env_int("PALOMAR_EDITORIAL_STEP_RETRIES", 0))
-    disable_tools = not _env_flag("PALOMAR_EDITORIAL_ENABLE_TOOLS")
-    last_message = f"FAIL: Cursor run did not finish ({model})"
-
+    last_message = f"FAIL: OpenAI request did not finish ({model})"
     for attempt in range(retries + 1):
         try:
-            options = AgentOptions(
-                api_key=api_key,
+            response = client.responses.create(
                 model=model,
-                local=LocalAgentOptions(cwd=str(ROOT)),
-                tools=[] if disable_tools else None,
+                instructions=system.strip(),
+                input=user.strip(),
             )
-            agent = Agent.create(options)
-        except CursorAgentError as err:
-            if disable_tools and "tools" in (err.message or "").lower() and attempt == 0:
-                print(f"NOTE: tools=[] rejected ({model}); retrying with default toolset", file=sys.stderr)
-                disable_tools = False
-                continue
-            raise SystemExit(f"FAIL: Cursor API error ({model}): {err.message}") from err
-        extra: dict[str, Any] = {}
-        try:
-            run = agent.send(prompt)
-            result = run.wait()
-            if str(result.status) != "finished" and hasattr(run, "supports"):
-                try:
-                    if run.supports("conversation"):
-                        extra["conversation"] = run.conversation()
-                except Exception as conv_err:
-                    extra["conversation_error"] = str(conv_err)
-        except CursorAgentError as err:
-            last_message = f"FAIL: Cursor API error ({model}): {err.message}"
+        except APIError as err:
+            last_message = f"FAIL: OpenAI API error ({model}): {err}"
+            dump_openai_failure(model, last_message)
             if attempt < retries:
                 print(f"RETRY: {last_message}", file=sys.stderr)
                 continue
             raise SystemExit(last_message) from err
-        finally:
-            agent.close()
-
-        if str(result.status) == "finished":
-            body = (result.result or "").strip()
-            if body:
-                return body
-            last_message = f"FAIL: empty Cursor response ({model}) run={result.id}"
-        else:
-            dump_cursor_failure(model, result, extra)
-            last_message = format_cursor_failure(model, result)
-            print(f"{last_message}\n  dump: {FAILURE_DUMP}", file=sys.stderr)
+        body = (getattr(response, "output_text", None) or "").strip()
+        if body:
+            return body
+        last_message = f"FAIL: empty OpenAI response ({model}) id={getattr(response, 'id', None)}"
+        dump_openai_failure(model, last_message)
         if attempt < retries:
             print(f"RETRY: {model} attempt {attempt + 2}/{retries + 1}", file=sys.stderr)
             continue
@@ -493,7 +412,7 @@ def run_step(
         "Evaluate the submission evidence below. Return one bare JSON object only.\n\n"
         + json.dumps(evidence, indent=2)
     )
-    raw = cursor_prompt(api_key, model, system, user)
+    raw = openai_prompt(api_key, model, system, user)
     result = parse_model_json(raw)
     errors = validate_step_result(result, step, cfg, formalization_yaml)
     if errors:
@@ -519,7 +438,7 @@ def run_synthesis(
         },
         indent=2,
     )
-    raw = cursor_prompt(api_key, model, system, user)
+    raw = openai_prompt(api_key, model, system, user)
     return parse_model_json(raw), model
 
 
@@ -540,7 +459,7 @@ def main() -> int:
     if args.no_resume:
         os.environ["PALOMAR_EDITORIAL_NO_RESUME"] = "1"
 
-    api_key = load_cursor_api_key()
+    api_key = load_openai_api_key()
     policy_dir = args.policy_dir
     rubric = load_json(policy_dir / "rubric.json")
     materiality = read_text(policy_dir / "prompts/materiality.md")
@@ -601,7 +520,7 @@ def main() -> int:
 
     packet = {
         "policy_commit": args.policy_pin,
-        "provider": "cursor_sdk",
+        "provider": "openai",
         "models": {
             "primary_default": PRIMARY_MODEL,
             "economy_default": ECONOMY_MODEL,

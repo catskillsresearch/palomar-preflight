@@ -151,7 +151,7 @@ for extra in os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split():
         prefixes.add(extra)
 if not prefixes:
     raise SystemExit(0)
-alt = "|".join(re.escape(p) for p in sorted(prefixes))
+alt = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
 name_re = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_']*)*")
 ordered = []
 seen = set()
@@ -233,7 +233,7 @@ for item in os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split():
         prefixes.add(item)
 if not prefixes:
     raise SystemExit(0)
-alt = "|".join(re.escape(p) for p in sorted(prefixes))
+alt = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
 name_re = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_']*)*")
 known = {
     line.strip()
@@ -284,7 +284,7 @@ for item in os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split():
         prefixes.add(item)
 if not prefixes:
     raise SystemExit(0)
-alt = "|".join(re.escape(p) for p in sorted(prefixes))
+alt = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
 pat = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_']*)*\._proof_[0-9]+")
 found = []
 seen = set()
