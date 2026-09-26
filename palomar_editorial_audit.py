@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run PalomarPolicy editorial rubric via the OpenAI API (gpt-6-sol)."""
+"""Run PalomarPolicy editorial rubric via pinned Codex (gpt-6-sol)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,9 @@ from palomar_paths import project_root
 ROOT = project_root()
 CACHE_DIR = ROOT / ".cache/palomar-editorial"
 STEPS_DIR = CACHE_DIR / "steps"
-FAILURE_DUMP = CACHE_DIR / "last-openai-failure.json"
+FAILURE_DUMP = CACHE_DIR / "last-codex-failure.json"
+CODEX_EVENTS = CACHE_DIR / "last-codex-events.jsonl"
+PINNED_CODEX_VERSION = "codex-cli 0.147.0"
 
 # Palomar's official editorial model. Every step uses it unless overridden.
 PRIMARY_MODEL = "gpt-6-sol"
@@ -128,6 +132,7 @@ def evidence_fingerprint() -> str:
         "comparator.json",
         "README.md",
         "PROVENANCE.md",
+        "arxiv.md",
         "Solution.lean",
     ):
         path = ROOT / rel
@@ -187,44 +192,258 @@ def save_cached_step(
     )
 
 
-def dump_openai_failure(model: str, message: str) -> Path:
+def dump_codex_failure(
+    model: str, message: str, stdout: str = "", stderr: str = ""
+) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     FAILURE_DUMP.write_text(
-        json.dumps({"model": model, "error": message}, indent=2) + "\n",
+        json.dumps(
+            {
+                "engine": "codex",
+                "model": model,
+                "error": message,
+                "stdout_tail": stdout[-8000:],
+                "stderr_tail": stderr[-8000:],
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return FAILURE_DUMP
 
 
-def openai_prompt(api_key: str, model: str, system: str, user: str) -> str:
-    from openai import OpenAI, APIError
+def result_schema(score_keys: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "step": {"type": "string"},
+            "outcome": {"type": "string", "enum": ["neutral", "warning", "failure"]},
+            "summary": {"type": "string"},
+            "findings": {"type": "array", "items": {"type": "string"}},
+            "scores": {
+                "type": "object",
+                "properties": {
+                    key: {"type": ["integer", "null"], "minimum": 1, "maximum": 5}
+                    for key in score_keys
+                },
+                "required": score_keys,
+                "additionalProperties": False,
+            },
+            "trust_level": {"type": ["string", "null"]},
+            "sources_checked": {"type": "array", "items": {"type": "string"}},
+            "declarations_checked": {"type": "array", "items": {"type": "string"}},
+            "codes_checked": {"type": "array", "items": {"type": "string"}},
+            "internal_notes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "evidence": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                    "required": ["evidence", "message"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": [
+            "step",
+            "outcome",
+            "summary",
+            "findings",
+            "scores",
+            "trust_level",
+            "sources_checked",
+            "declarations_checked",
+            "codes_checked",
+            "internal_notes",
+        ],
+        "additionalProperties": False,
+    }
 
-    client = OpenAI(api_key=api_key)
+
+def synthesis_schema(score_keys: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "outcome": {
+                "type": "string",
+                "enum": ["neutral", "revision_required", "rejected"],
+            },
+            "summary": {"type": "string"},
+            "scores": {
+                "type": "object",
+                "properties": {
+                    key: {"type": ["integer", "null"], "minimum": 1, "maximum": 5}
+                    for key in score_keys
+                },
+                "required": score_keys,
+                "additionalProperties": False,
+            },
+            "warnings": {"type": "array", "items": {"type": "string"}},
+            "requested_changes": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["outcome", "summary", "scores", "warnings", "requested_changes"],
+        "additionalProperties": False,
+    }
+
+
+def codex_executable() -> Path:
+    configured = os.environ.get("PALOMAR_CODEX", "").strip()
+    path = (
+        Path(configured)
+        if configured
+        else Path(__file__).resolve().parent
+        / "codex-runtime"
+        / "node_modules"
+        / ".bin"
+        / "codex"
+    )
+    if not path.is_file():
+        raise SystemExit(f"FAIL: pinned Codex executable is missing: {path}")
+    found = subprocess.run(
+        [str(path), "--version"], capture_output=True, text=True, check=False
+    )
+    if found.returncode != 0 or found.stdout.strip() != PINNED_CODEX_VERSION:
+        raise SystemExit(
+            f"FAIL: expected {PINNED_CODEX_VERSION}, found "
+            f"{found.stdout.strip() or found.stderr.strip()!r}"
+        )
+    return path
+
+
+def codex_prompt(
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    schema: dict[str, Any],
+) -> str:
+    codex = codex_executable()
     retries = max(0, _env_int("PALOMAR_EDITORIAL_STEP_RETRIES", 0))
-    last_message = f"FAIL: OpenAI request did not finish ({model})"
+    last_message = f"FAIL: Codex run did not finish ({model})"
     for attempt in range(retries + 1):
-        try:
-            response = client.responses.create(
-                model=model,
-                instructions=system.strip(),
-                input=user.strip(),
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="codex-pass-", dir=CACHE_DIR
+        ) as temp_name:
+            temp = Path(temp_name)
+            schema_path = temp / "schema.json"
+            output_path = temp / "message.json"
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            prompt = (
+                f"{system.strip()}\n\n---\n\n"
+                "You are running in the submission repository with read-only tools. "
+                "Inspect the current filesystem working tree directly; it is the "
+                "authoritative evidence for this local audit even when it differs "
+                "from HEAD. Do not use `git show`, a historical commit, or an "
+                "index snapshot as the file source. Inspect Challenge.lean, "
+                "formalization.yaml, README.md, PROVENANCE.md, arxiv.md, "
+                "comparator.json, Solution.lean, and relevant Lean sources. "
+                "Do not treat the evidence summary below as exhaustive.\n\n"
+                f"{user.strip()}\n\n"
+                "Return one JSON object conforming to the supplied schema."
             )
-        except APIError as err:
-            last_message = f"FAIL: OpenAI API error ({model}): {err}"
-            dump_openai_failure(model, last_message)
+            command = [
+                str(codex),
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--json",
+                "--output-schema",
+                str(schema_path),
+                "--output-last-message",
+                str(output_path),
+                "--cd",
+                str(ROOT),
+                "--model",
+                model,
+                "-c",
+                'web_search="disabled"',
+                "-c",
+                "features.multi_agent=false",
+                "-",
+            ]
+            reasoning = os.environ.get(
+                "PALOMAR_EDITORIAL_REASONING_EFFORT", ""
+            ).strip()
+            if sys.platform.startswith("linux"):
+                # Some local Linux hosts deny bubblewrap's loopback setup.
+                # Landlock preserves the same read-only policy without a
+                # network-namespace operation.
+                command[-1:-1] = [
+                    "-c",
+                    "features.use_legacy_landlock=true",
+                ]
+            if reasoning:
+                command[-1:-1] = [
+                    "-c",
+                    f"model_reasoning_effort={reasoning}",
+                ]
+            env = os.environ.copy()
+            env["OPENAI_API_KEY"] = api_key
+            env["CODEX_HOME"] = str(temp / "codex-home")
+            (temp / "codex-home").mkdir()
+            login = subprocess.run(
+                [str(codex), "login", "--with-api-key"],
+                input=api_key,
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+            if login.returncode != 0:
+                last_message = f"FAIL: Codex API-key login failed ({model})"
+                dump_codex_failure(
+                    model, last_message, login.stdout, login.stderr
+                )
+                raise SystemExit(
+                    f"{last_message}\n  details: {FAILURE_DUMP}"
+                )
+            try:
+                run = subprocess.run(
+                    command,
+                    input=prompt,
+                    text=True,
+                    capture_output=True,
+                    timeout=max(
+                        60, _env_int("PALOMAR_EDITORIAL_STEP_TIMEOUT", 7200)
+                    ),
+                    env=env,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as err:
+                last_message = f"FAIL: Codex run timed out ({model})"
+                dump_codex_failure(
+                    model,
+                    last_message,
+                    err.stdout or "",
+                    err.stderr or "",
+                )
+                if attempt < retries:
+                    print(f"RETRY: {last_message}", file=sys.stderr)
+                    continue
+                raise SystemExit(last_message) from err
+            CODEX_EVENTS.write_text(run.stdout, encoding="utf-8")
+            if run.returncode == 0 and output_path.is_file():
+                body = output_path.read_text(encoding="utf-8").strip()
+                if body:
+                    return body
+                last_message = f"FAIL: empty Codex response ({model})"
+            else:
+                last_message = (
+                    f"FAIL: Codex run failed ({model}, exit {run.returncode})"
+                )
+            dump_codex_failure(model, last_message, run.stdout, run.stderr)
             if attempt < retries:
                 print(f"RETRY: {last_message}", file=sys.stderr)
                 continue
-            raise SystemExit(last_message) from err
-        body = (getattr(response, "output_text", None) or "").strip()
-        if body:
-            return body
-        last_message = f"FAIL: empty OpenAI response ({model}) id={getattr(response, 'id', None)}"
-        dump_openai_failure(model, last_message)
-        if attempt < retries:
-            print(f"RETRY: {model} attempt {attempt + 2}/{retries + 1}", file=sys.stderr)
-            continue
-        raise SystemExit(last_message)
+            raise SystemExit(
+                f"{last_message}\n  details: {FAILURE_DUMP}"
+            )
     raise SystemExit(last_message)
 
 
@@ -265,32 +484,22 @@ def has_proof_account(*texts: str) -> bool:
 
 def assemble_evidence(step_id: str, cfg: dict, policy_dir: Path, mechanical: dict, prior: list[dict]) -> dict:
     repo_commit = mechanical.get("repository", {}).get("commit") or "unknown"
-    evidence: dict[str, Any] = {
+    return {
         "step": step_id,
         "repository_commit": repo_commit,
         "comparator": cfg,
         "mechanical_report": mechanical,
+        "policy_directory": str(policy_dir),
+        "repository_root": str(ROOT),
         "previous_findings": [
             finding for result in prior for finding in result.get("findings", [])
         ],
+        "declarations_checked_order": expected_declarations(cfg),
+        "evidence_instruction": (
+            "Inspect the complete read-only repository directly. Narrative evidence "
+            "is not limited to this summary; arxiv.md is an eligible narrative source."
+        ),
     }
-    files = {
-        "formalization_metadata": ROOT / "formalization.yaml",
-        "challenge_source": ROOT / "Challenge.lean",
-        "solution_source": ROOT / "Solution.lean",
-        "project_readme": ROOT / "README.md",
-        "comparator_config": ROOT / "comparator.json",
-        "lakefile": ROOT / "lakefile.toml" if (ROOT / "lakefile.toml").is_file() else ROOT / "lakefile.lean",
-        "lean_toolchain": ROOT / "lean-toolchain",
-        "provenance": ROOT / "PROVENANCE.md",
-    }
-    for key, path in files.items():
-        if path.is_file():
-            evidence[key] = read_text(path, limit=120_000 if key == "challenge_source" else 80_000)
-    if (policy_dir / "taxonomies/classification-guide.md").is_file():
-        evidence["classification_guide"] = read_text(policy_dir / "taxonomies/classification-guide.md", 40_000)
-    evidence["declarations_checked_order"] = expected_declarations(cfg)
-    return evidence
 
 
 def validate_step_result(result: dict, step: dict, cfg: dict, formalization_yaml: str) -> list[str]:
@@ -412,7 +621,7 @@ def run_step(
         "Evaluate the submission evidence below. Return one bare JSON object only.\n\n"
         + json.dumps(evidence, indent=2)
     )
-    raw = openai_prompt(api_key, model, system, user)
+    raw = codex_prompt(api_key, model, system, user, result_schema(step.get("score_keys", [])))
     result = parse_model_json(raw)
     errors = validate_step_result(result, step, cfg, formalization_yaml)
     if errors:
@@ -426,6 +635,7 @@ def run_synthesis(
     step_results: list[dict],
     mechanical: dict,
     api_key: str,
+    score_keys: list[str],
 ) -> tuple[dict, str]:
     model = model_for_step("synthesis")
     prompt_text = read_text(policy_dir / "prompts/06-synthesis.md")
@@ -438,7 +648,7 @@ def run_synthesis(
         },
         indent=2,
     )
-    raw = openai_prompt(api_key, model, system, user)
+    raw = codex_prompt(api_key, model, system, user, synthesis_schema(score_keys))
     return parse_model_json(raw), model
 
 
@@ -510,7 +720,12 @@ def main() -> int:
     else:
         print(f"RUN: editorial synthesis ({synth_model}) …")
         synthesis, used_synth_model = run_synthesis(
-            policy_dir, materiality, step_results, mechanical, api_key
+            policy_dir,
+            materiality,
+            step_results,
+            mechanical,
+            api_key,
+            list(rubric.get("registry_scores", [])),
         )
         save_cached_step("synthesis", repo_commit, args.policy_pin, fingerprint, used_synth_model, synthesis)
     models_by_step["synthesis"] = used_synth_model
@@ -520,7 +735,8 @@ def main() -> int:
 
     packet = {
         "policy_commit": args.policy_pin,
-        "provider": "openai",
+        "provider": "codex",
+        "engine_version": PINNED_CODEX_VERSION,
         "models": {
             "primary_default": PRIMARY_MODEL,
             "economy_default": ECONOMY_MODEL,

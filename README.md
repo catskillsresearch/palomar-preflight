@@ -83,16 +83,17 @@ Environment overrides (optional):
 | `PALOMAR_EXTRA_PRINT_NAMES` | Extra constants to `#print` during closure walk |
 | `PALOMAR_CHECK_DECL_KINDS` | Set to `0` if `theorem_names` includes defs (Mizar-style) |
 | `PALOMAR_CHALLENGE_FORBIDDEN_PREFIXES` | Extra Challenge import bans |
-| `PALOMAR_EDITORIAL_PYTHON` | Python with `cursor-sdk` for the LLM audit (skips venv create) |
+| `PALOMAR_EDITORIAL_PYTHON` | Python with PyYAML for the LLM audit (skips venv create) |
 | `PALOMAR_EDITORIAL_NO_RESUME` | Set to `1` to ignore cached successful editorial steps |
-| `PALOMAR_EDITORIAL_STEP_RETRIES` | Extra attempts after a crashed Cursor run (default `0`) |
-| `PALOMAR_EDITORIAL_ENABLE_TOOLS` | Set to `1` to give editorial agents the default local toolset |
+| `PALOMAR_EDITORIAL_STEP_RETRIES` | Extra attempts after a failed Codex run (default `0`) |
+| `PALOMAR_EDITORIAL_STEP_TIMEOUT` | Per-pass Codex timeout in seconds (default `7200`) |
+| `PALOMAR_EDITORIAL_REASONING_EFFORT` | Optional Codex reasoning-effort override |
 
-The editorial audit looks for `cursor_sdk` in this order: `PALOMAR_EDITORIAL_PYTHON`,
+The editorial audit looks for PyYAML in this order: `PALOMAR_EDITORIAL_PYTHON`,
 `$VIRTUAL_ENV/bin/python`, `<project>/.venv-editorial`, `<project>/.venv-ocr`,
 then sibling `*/.venv-editorial` and `*/.venv-ocr`. A project may symlink
 `.venv-editorial` to a shared install (for example `../scott1964/.venv-editorial`).
-A new venv is created only when none of those can `import cursor_sdk`.
+A new venv is created only when none of those can `import yaml`.
 
 Optional `scripts/palomar_preflight_local.sh` in the Lean project runs extra
 mechanical checks (after submodule ban, before `lake build`).
@@ -123,17 +124,22 @@ bash scripts/palomar_preflight.sh                     # before Palomar submit
 bash scripts/palomar_preflight.sh --editorial-only    # retry LLM audit only
 ```
 
-Editorial steps are JSON-only OpenAI Responses calls (`gpt-6-sol`). The key is
-read from `OPENAI_API_KEY` or `../openai_key.txt`. A finished step is cached under
+Editorial steps run with the pinned `@openai/codex` 0.147.0 CLI and
+`gpt-6-sol`, matching the Palomar production engine identity
+`codex:gpt-6-sol`. Codex runs ephemerally with user configuration ignored,
+web search disabled, a read-only sandbox over the full repository, and an
+enforced JSON output schema. The key is read from `OPENAI_API_KEY` or
+`../openai_key.txt`. A finished step is cached under
 `.cache/palomar-editorial/steps/` against HEAD, the policy pin, and a hash of the
 compared sources. `--editorial-only` after a mid-audit crash resumes those steps
 instead of re-paying `classification` / `metadata`. A failed call writes
-`.cache/palomar-editorial/last-openai-failure.json`. Set
+`.cache/palomar-editorial/last-codex-failure.json`; the JSON event stream is
+retained as `last-codex-events.jsonl`. Set
 `PALOMAR_EDITORIAL_NO_RESUME=1` for a clean audit.
 
 Editorial audit pins `git rev-parse HEAD`. If Challenge, `comparator.json`, or
 `formalization.yaml` differ from that commit, the mechanical-report step fails
-instead of sending the LLM a mixed working-tree / pinned-commit packet. Commit
+instead of exposing a mixed working-tree / pinned-commit repository. Commit
 first, or pass `--allow-dirty` only for experiments.
 
 Mechanical includes Palomar-pinned Comparator (`verify-comparator.sh`):

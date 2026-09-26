@@ -429,7 +429,7 @@ if [[ "$MECHANICAL_ONLY" -eq 1 ]]; then
   done
   echo ""
   echo "OK: mechanical preflight passed (--mechanical-only; editorial audit skipped)."
-  echo "NOTE: full Palomar preflight also runs vendored-policy sync and an OpenAI editorial audit (gpt-6-sol)."
+  echo "NOTE: full Palomar preflight also runs vendored-policy sync and a pinned Codex editorial audit (gpt-6-sol)."
   export PALOMAR_REPORT_EXIT_CODE=0
   export PALOMAR_REPORT_MESSAGE="mechanical preflight passed (--mechanical-only)"
   exit 0

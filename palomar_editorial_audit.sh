@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Editorial audit wrapper: OpenAI client, model gpt-6-sol.
+# Editorial audit wrapper: pinned Codex CLI, model gpt-6-sol.
 set -euo pipefail
 
 TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -10,18 +10,18 @@ export PYTHONPATH="$TOOLKIT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 venv_ready() {
   local py="$1"
-  [[ -n "$py" && -x "$py" ]] && "$py" -c "import openai" 2>/dev/null
+  [[ -n "$py" && -x "$py" ]] && "$py" -c "import yaml" 2>/dev/null
 }
 
-install_openai() {
+install_python_deps() {
   local py="$1"
-  echo "editorial audit: installing openai into ${py%/bin/python}" >&2
+  echo "editorial audit: installing Python dependencies into ${py%/bin/python}" >&2
   "$py" -m pip install \
     --index-url https://pypi.org/simple \
     -r "$TOOLKIT_ROOT/requirements-editorial.txt" >&2
 }
 
-# Prefer an interpreter that can import openai. Search order:
+# Prefer an interpreter that can import PyYAML. Search order:
 # PALOMAR_EDITORIAL_PYTHON, VIRTUAL_ENV, this project's .venv-editorial /
 # .venv-ocr, then sibling */.venv-editorial and */.venv-ocr.
 pick_python() {
@@ -49,7 +49,7 @@ pick_python() {
       return 0
     fi
     if [[ -x "$py" ]]; then
-      install_openai "$py"
+      install_python_deps "$py"
       if venv_ready "$py"; then
         echo "editorial audit: using $py" >&2
         echo "$py"
@@ -62,13 +62,13 @@ pick_python() {
 
   if [[ -L "$PALOMAR_PROJECT_ROOT/.venv-editorial" && ! -x "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/python" ]]; then
     echo "FAIL: $PALOMAR_PROJECT_ROOT/.venv-editorial is a broken symlink." >&2
-    echo "Set PALOMAR_EDITORIAL_PYTHON to a python that has the openai package." >&2
+    echo "Set PALOMAR_EDITORIAL_PYTHON to a python that has PyYAML." >&2
     return 1
   fi
 
   echo "editorial audit: creating $PALOMAR_PROJECT_ROOT/.venv-editorial" >&2
   python3 -m venv "$PALOMAR_PROJECT_ROOT/.venv-editorial"
-  install_openai "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/python"
+  install_python_deps "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/python"
   echo "$PALOMAR_PROJECT_ROOT/.venv-editorial/bin/python"
 }
 
@@ -94,4 +94,17 @@ load_openai_api_key() {
 }
 
 load_openai_api_key
+
+CODEX_PREFIX="$TOOLKIT_ROOT/codex-runtime"
+CODEX_BIN="$CODEX_PREFIX/node_modules/.bin/codex"
+if [[ ! -x "$CODEX_BIN" ]] || [[ "$("$CODEX_BIN" --version 2>/dev/null || true)" != "codex-cli 0.147.0" ]]; then
+  command -v npm >/dev/null 2>&1 || {
+    echo "FAIL: npm is required to install the pinned Codex CLI runtime." >&2
+    exit 1
+  }
+  echo "editorial audit: installing pinned Codex CLI 0.147.0" >&2
+  npm ci --prefix "$CODEX_PREFIX" --ignore-scripts --no-audit --no-fund >&2
+fi
+export PALOMAR_CODEX="$CODEX_BIN"
+
 exec "$(pick_python)" "$TOOLKIT_ROOT/palomar_editorial_audit.py" "$@"

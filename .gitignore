@@ -1,4 +1,5 @@
 .venv-editorial/
+codex-runtime/node_modules/
 .cache/
 reports/
 *.pyc
