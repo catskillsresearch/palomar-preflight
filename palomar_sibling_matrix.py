@@ -210,7 +210,7 @@ PLAN_COLUMN_TITLES: dict[str, str] = {
     "local_checks": "Project-specific mechanical checks",
     "lake_build": "Build Lean project",
     "type_compare": "Compare types and declaration-closure values",
-    "comparator": "Palomar-pinned Comparator",
+    "comparator": "Comparator with nanoda and con-ron",
     "sorry_scan": "Reject proof holes in Solution",
     "axioms": "Permitted theorem axioms",
     "patch_format": "Patch formatting",

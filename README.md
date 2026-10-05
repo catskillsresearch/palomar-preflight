@@ -7,9 +7,9 @@ editorial LLM audit used before submission.
 (`../palomar-preflight`) and invoke it through a thin project wrapper with
 CLI flags. CI checks out this repo into `palomar-preflight/` inside each project.
 
-Palomar rejects `.gitmodules`. Registry verification itself runs Comparator from
-PalomarSubmission — not this repo — but `verify-comparator.sh` here uses the
-same pins.
+Palomar rejects `.gitmodules`. Registry verification runs the toolchain's
+`lake comparator` from PalomarSubmission. `verify-comparator.sh` registers the
+same external kernels: that toolchain's `nanoda_bin` and `con-ron --jobs=2`.
 
 ## Standard project wrapper
 
@@ -142,8 +142,9 @@ Editorial audit pins `git rev-parse HEAD`. If Challenge, `comparator.json`, or
 instead of exposing a mixed working-tree / pinned-commit repository. Commit
 first, or pass `--allow-dirty` only for experiments.
 
-Mechanical includes Palomar-pinned Comparator (`verify-comparator.sh`):
-declaration-closure Const matching, axiom checks, and Lean kernel replay.
+Mechanical includes Comparator (`verify-comparator.sh`): declaration-closure
+Const matching, axiom checks, Lean kernel replay, and the toolchain NanoDa
+and con-ron kernels.
 
 ## Run report (phase overview)
 

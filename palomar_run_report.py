@@ -26,7 +26,7 @@ PHASE_TITLES: dict[str, str] = {
     "local_checks": "Project-specific mechanical checks",
     "lake_build": "Build Lean project",
     "type_compare": "Compare Challenge/Solution types and declaration-closure values",
-    "comparator": "Run Palomar-pinned Comparator",
+    "comparator": "Run Comparator with nanoda and con-ron",
     "sorry_scan": "Reject proof holes in Solution sources",
     "axioms": "Check permitted theorem axioms",
     "patch_format": "Check patch formatting",

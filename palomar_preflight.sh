@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Palomar local preflight: mechanical Comparator checks + editorial LLM audit.
-# Mechanical runs Palomar's pinned Comparator so local/CI rejection matches
-# registry verification. Use --mechanical-only for CI without API calls.
+# Mechanical runs `lake comparator` with the toolchain's nanoda and con-ron so
+# local/CI rejection matches registry verification.
+# Use --mechanical-only for CI without API calls.
 # Use --editorial-only to rerun policy sync and the LLM audit without rebuilding.
 set -euo pipefail
 
@@ -370,7 +371,7 @@ palomar_run_phase type_compare \
   0 env PALOMAR_QUIET=1 bash "$TOOLKIT_ROOT/compare_challenge_solution_types.sh" \
   || compare_status=$?
 
-palomar_run_phase comparator "Run Palomar-pinned Comparator" 1 \
+palomar_run_phase comparator "Run Comparator with nanoda and con-ron" 1 \
   bash "$TOOLKIT_ROOT/verify-comparator.sh"
 
 if [[ "$compare_status" -ne 0 ]]; then
