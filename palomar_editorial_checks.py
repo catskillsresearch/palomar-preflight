@@ -120,6 +120,21 @@ def short_name(full: str) -> str:
     return full.split(".")[-1]
 
 
+def theorem_search_names(full: str) -> list[str]:
+    """Candidate Challenge theorem identifiers for a comparator FQN.
+
+    Nested results may appear as ``namespace parent / theorem child`` (search
+    ``child``) or as a single dotted declaration ``theorem parent.child``
+    (search ``parent.child``). Try longer suffixes first so dotted declarations
+    win over a bare final segment that may be a Lean keyword (e.g. ``universe``).
+    """
+    parts = full.split(".")
+    names: list[str] = []
+    for i in range(1, len(parts) + 1):
+        names.append(".".join(parts[-i:]))
+    return names
+
+
 def main_result_declaration(entry: object) -> str | None:
     if isinstance(entry, dict):
         decl = entry.get("declaration")
@@ -188,16 +203,27 @@ def check_sorry_definition_pinning(cfg: dict, challenge_text: str) -> list[str]:
     errors: list[str] = []
     sorry_defs = sorry_qualified_defs(challenge_text)
     pinned = compared_definition_names(cfg)
+    # Also accept namespace-relative opaque names when the FQN is pinned.
+    pinned_with_suffixes = set(pinned)
+    for name in pinned:
+        parts = name.split(".")
+        for i in range(1, len(parts)):
+            pinned_with_suffixes.add(".".join(parts[i:]))
     for full_name in cfg.get("theorem_names", []):
-        short = short_name(full_name)
-        statement = theorem_statement(challenge_text, short)
+        statement = None
+        for candidate in theorem_search_names(full_name):
+            statement = theorem_statement(challenge_text, candidate)
+            if statement is not None:
+                break
         if statement is None:
             errors.append(
                 f"compared theorem {full_name!r} not found as `sorry` theorem in Challenge.lean"
             )
             continue
         referenced = set(QUALIFIED_NAME.findall(statement))
-        opaque = sorted(q for q in referenced if q in sorry_defs and q not in pinned)
+        opaque = sorted(
+            q for q in referenced if q in sorry_defs and q not in pinned_with_suffixes
+        )
         if opaque:
             errors.append(
                 f"{full_name} references opaque Challenge definitions not listed in "
