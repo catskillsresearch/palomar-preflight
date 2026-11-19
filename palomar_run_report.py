@@ -25,6 +25,7 @@ PHASE_TITLES: dict[str, str] = {
     "no_submodules": "Reject git submodules (Palomar cannot preserve them)",
     "local_checks": "Project-specific mechanical checks",
     "lake_build": "Build Lean project",
+    "module_name_clash": "Challenge/Solution module names vs Lake dependency top-level entries",
     "type_compare": "Compare Challenge/Solution types and declaration-closure values",
     "comparator": "Run Comparator with nanoda and con-ron",
     "sorry_scan": "Reject proof holes in Solution sources",

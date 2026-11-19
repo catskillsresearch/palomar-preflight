@@ -36,6 +36,9 @@ for n in cfg.get("definition_names", []):
 PY
 )
 
+CHALLENGE_MODULE="$(python3 -c 'import json; print(json.load(open("comparator.json"))["challenge_module"])')"
+SOLUTION_MODULE="$(python3 -c 'import json; print(json.load(open("comparator.json"))["solution_module"])')"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -54,8 +57,8 @@ write_lean() {
   } >"${out}"
 }
 
-write_lean Challenge "${tmp}/ChallengeTypes.lean"
-write_lean Solution "${tmp}/SolutionTypes.lean"
+write_lean "$CHALLENGE_MODULE" "${tmp}/ChallengeTypes.lean"
+write_lean "$SOLUTION_MODULE" "${tmp}/SolutionTypes.lean"
 
 if [[ "${PALOMAR_CHECK_DECL_KINDS:-1}" != 0 ]]; then
   write_kind_lean() {
@@ -83,12 +86,12 @@ LEAN
       done
     } >"${out}"
   }
-  write_kind_lean Challenge "${tmp}/ChallengeKinds.lean"
-  write_kind_lean Solution "${tmp}/SolutionKinds.lean"
-  for module in Challenge Solution; do
-    if ! lake env lean "${tmp}/${module}Kinds.lean" >"${tmp}/${module}-kinds.raw" 2>&1; then
-      echo "FAIL: Comparator declaration-kind check failed in ${module}."
-      cat "${tmp}/${module}-kinds.raw"
+  write_kind_lean "$CHALLENGE_MODULE" "${tmp}/ChallengeKinds.lean"
+  write_kind_lean "$SOLUTION_MODULE" "${tmp}/SolutionKinds.lean"
+  for role in Challenge Solution; do
+    if ! lake env lean "${tmp}/${role}Kinds.lean" >"${tmp}/${role}-kinds.raw" 2>&1; then
+      echo "FAIL: Comparator declaration-kind check failed in ${role}."
+      cat "${tmp}/${role}-kinds.raw"
       exit 1
     fi
   done
@@ -203,8 +206,8 @@ write_definition_dump() {
 }
 
 dump_bodies() {
-  write_definition_dump Challenge "${tmp}/ChallengeDefinitions.lean"
-  write_definition_dump Solution "${tmp}/SolutionDefinitions.lean"
+  write_definition_dump "$CHALLENGE_MODULE" "${tmp}/ChallengeDefinitions.lean"
+  write_definition_dump "$SOLUTION_MODULE" "${tmp}/SolutionDefinitions.lean"
   lake env lean "${tmp}/ChallengeDefinitions.lean" 2>/dev/null \
     | { grep -vE 'LEAN_PATH|trace:|warning:|declaration uses' || true; } \
     >"${tmp}/challenge-definitions.txt"

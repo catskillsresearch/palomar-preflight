@@ -309,16 +309,18 @@ print(f"OK: Challenge closure has {checked} project file(s).")
 PY
 
 palomar_run_phase challenge_size "Challenge surface size limits" 1 python3 - <<'PY'
+import json
 from pathlib import Path
 
-path = Path("Challenge.lean")
+cfg = json.loads(Path("comparator.json").read_text(encoding="utf-8"))
+path = Path(*cfg["challenge_module"].split(".")).with_suffix(".lean")
 lines = path.read_text(encoding="utf-8").count("\n") + 1
 size = path.stat().st_size
 if lines >= 1000:
-    raise SystemExit(f"Challenge.lean too long: {lines} lines (limit 1000)")
+    raise SystemExit(f"{path} too long: {lines} lines (limit 1000)")
 if size >= 100 * 1024:
-    raise SystemExit(f"Challenge.lean too large: {size} bytes (limit 100 KiB)")
-print(f"OK: Challenge.lean is {lines} lines, {size} bytes.")
+    raise SystemExit(f"{path} too large: {size} bytes (limit 100 KiB)")
+print(f"OK: {path} is {lines} lines, {size} bytes.")
 PY
 
 palomar_run_phase lake_manifest "Exactly one Lake manifest at repository root" 1 bash -c '
@@ -364,6 +366,10 @@ palomar_run_phase lake_build "Build Lean project" 1 bash -c '
   tail -20 "$log"
   exit "$ec"
 '
+
+palomar_run_phase module_name_clash \
+  "Challenge/Solution module names vs Lake dependency top-level entries" 1 \
+  python3 "$TOOLKIT_ROOT/check_module_name_clash.py"
 
 compare_status=0
 palomar_run_phase type_compare \
