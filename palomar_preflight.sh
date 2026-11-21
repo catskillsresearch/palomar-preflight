@@ -31,7 +31,8 @@ project containing comparator.json and lean-toolchain.
 
 Options:
   --project-root DIR       Lean project root (default: discover from cwd)
-  --sorry-paths PATHS      Space-separated sorry scan paths (default: Solution.lean)
+  --sorry-paths PATHS      Space-separated sorry scan paths
+                           (default: Solution.lean, or path from solution_module)
   --forbidden-prefix P     Extra forbidden Challenge import prefix (repeatable)
   --closure-prefix P       Extra namespace prefix for declaration-closure walk
   --extra-print-name N     Extra constant to #print in closure walk (repeatable)
@@ -141,7 +142,31 @@ export PALOMAR_NO_POLICY_SYNC="$NO_POLICY_SYNC"
 export PALOMAR_SKIP_EDITORIAL_IF_POLICY_UNCHANGED="$SKIP_EDITORIAL_IF_POLICY_UNCHANGED"
 
 palomar_cd_project
-export PALOMAR_SORRY_PATHS="${PALOMAR_SORRY_PATHS:-Solution.lean}"
+# Default sorry scan: root Solution.lean, else path from comparator.json solution_module.
+if [[ -z "${PALOMAR_SORRY_PATHS:-}" ]]; then
+  if [[ -f Solution.lean ]]; then
+    export PALOMAR_SORRY_PATHS="Solution.lean"
+  else
+    _derived="$(python3 - <<'PY'
+import json
+from pathlib import Path
+cfg = json.loads(Path("comparator.json").read_text(encoding="utf-8"))
+mod = cfg.get("solution_module", "")
+if not mod:
+    raise SystemExit("FAIL: no Solution.lean and comparator.json has no solution_module")
+path = Path(*mod.split(".")).with_suffix(".lean")
+if not path.is_file():
+    raise SystemExit(
+        f"FAIL: no Solution.lean and derived path missing: {path}\n"
+        "Pass --sorry-paths or set PALOMAR_SORRY_PATHS."
+    )
+print(path.as_posix())
+PY
+)"
+    export PALOMAR_SORRY_PATHS="$_derived"
+    unset _derived
+  fi
+fi
 
 if [[ -z "$PRIOR_REPORT_SNAPSHOT" ]]; then
   PRIOR_REPORT_SNAPSHOT="$PALOMAR_PROJECT_ROOT/.cache/palomar-editorial/preflight-run.json"
@@ -390,6 +415,7 @@ if [[ "$compare_status" -ne 0 ]]; then
 fi
 
 palomar_run_phase sorry_scan "Reject proof holes in Solution sources" 1 python3 - <<'PY'
+import json
 import os
 import re
 from pathlib import Path
@@ -398,9 +424,28 @@ pattern = re.compile(
     r"(^|:=|by)[[:space:]]+(?:sorry|admit)([[:space:];]|$)|^[[:space:]]*(?:sorry|admit)([[:space:];]|$)",
     re.MULTILINE,
 )
-raw = os.environ.get("PALOMAR_SORRY_PATHS", "Solution.lean").split()
+
+def default_sorry_paths() -> list[str]:
+    if Path("Solution.lean").is_file():
+        return ["Solution.lean"]
+    cfg = json.loads(Path("comparator.json").read_text(encoding="utf-8"))
+    mod = cfg.get("solution_module", "")
+    if not mod:
+        raise SystemExit(
+            "FAIL: no Solution.lean and comparator.json has no solution_module.\n"
+            "Pass --sorry-paths or set PALOMAR_SORRY_PATHS."
+        )
+    path = Path(*mod.split(".")).with_suffix(".lean")
+    if not path.is_file():
+        raise SystemExit(
+            f"FAIL: no Solution.lean and derived path missing: {path}\n"
+            "Pass --sorry-paths or set PALOMAR_SORRY_PATHS."
+        )
+    return [path.as_posix()]
+
+raw = os.environ.get("PALOMAR_SORRY_PATHS", "").split()
 if not raw:
-    raw = ["Solution.lean"]
+    raw = default_sorry_paths()
 files = []
 for item in raw:
     path = Path(item)

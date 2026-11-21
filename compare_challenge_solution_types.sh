@@ -155,7 +155,7 @@ for extra in os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split():
 if not prefixes:
     raise SystemExit(0)
 alt = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
-name_re = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_']*)*")
+name_re = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_'\u2080-\u2089\u2090-\u209c]*)*")
 ordered = []
 seen = set()
 
@@ -208,11 +208,14 @@ write_definition_dump() {
 dump_bodies() {
   write_definition_dump "$CHALLENGE_MODULE" "${tmp}/ChallengeDefinitions.lean"
   write_definition_dump "$SOLUTION_MODULE" "${tmp}/SolutionDefinitions.lean"
-  lake env lean "${tmp}/ChallengeDefinitions.lean" 2>/dev/null \
-    | { grep -vE 'LEAN_PATH|trace:|warning:|declaration uses' || true; } \
+  # `#print` of a truncated name (e.g. `Model.s` from `s₀`) makes `lean` exit 1;
+  # keep going under `pipefail` and drop those error lines so Challenge/Solution
+  # path prefixes do not create a spurious dump diff.
+  { lake env lean "${tmp}/ChallengeDefinitions.lean" || true; } 2>/dev/null \
+    | { grep -vE 'LEAN_PATH|trace:|warning:|declaration uses|error\(lean|Unknown constant' || true; } \
     >"${tmp}/challenge-definitions.txt"
-  lake env lean "${tmp}/SolutionDefinitions.lean" 2>/dev/null \
-    | { grep -vE 'LEAN_PATH|trace:|warning:|declaration uses' || true; } \
+  { lake env lean "${tmp}/SolutionDefinitions.lean" || true; } 2>/dev/null \
+    | { grep -vE 'LEAN_PATH|trace:|warning:|declaration uses|error\(lean|Unknown constant' || true; } \
     >"${tmp}/solution-definitions.txt"
 }
 
@@ -237,7 +240,7 @@ for item in os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split():
 if not prefixes:
     raise SystemExit(0)
 alt = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
-name_re = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_']*)*")
+name_re = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_'\u2080-\u2089\u2090-\u209c]*)*")
 known = {
     line.strip()
     for line in open(sys.argv[1], encoding="utf-8", errors="replace")
@@ -288,7 +291,7 @@ for item in os.environ.get("PALOMAR_CLOSURE_PREFIXES", "").split():
 if not prefixes:
     raise SystemExit(0)
 alt = "|".join(re.escape(p) for p in sorted(prefixes, key=len, reverse=True))
-pat = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_']*)*\._proof_[0-9]+")
+pat = re.compile(rf"(?:{alt})(?:\.[A-Za-z_][A-Za-z0-9_'\u2080-\u2089\u2090-\u209c]*)*\._proof_[0-9]+")
 found = []
 seen = set()
 for path in sys.argv[1:]:

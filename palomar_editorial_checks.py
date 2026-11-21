@@ -277,7 +277,7 @@ def solution_import_roots() -> list[str]:
     text = path.read_text(encoding="utf-8")
     roots: list[str] = []
     seen: set[str] = set()
-    for match in re.finditer(r"^import\s+(\S+)", text, re.MULTILINE):
+    for match in re.finditer(r"^(?:public\s+)?import\s+(\S+)", text, re.MULTILINE):
         root = match.group(1).split(".", 1)[0]
         if root and root not in seen:
             seen.add(root)
