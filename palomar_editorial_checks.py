@@ -301,13 +301,28 @@ def check_compared_sources(formalization: dict, cfg: dict) -> list[str]:
     return errors
 
 
+def challenge_source_path(cfg: dict) -> Path:
+    """Resolve Challenge.lean from comparator.json (root or nested module)."""
+    mod = cfg.get("challenge_module") or "Challenge"
+    path = ROOT / Path(*str(mod).split(".")).with_suffix(".lean")
+    if path.is_file():
+        return path
+    fallback = ROOT / "Challenge.lean"
+    if fallback.is_file():
+        return fallback
+    raise SystemExit(
+        f"FAIL: Challenge source not found for challenge_module={mod!r} "
+        f"(tried {path.relative_to(ROOT)} and Challenge.lean)."
+    )
+
+
 def main() -> int:
     formalization_path = ROOT / "formalization.yaml"
     comparator_path = ROOT / "comparator.json"
-    challenge_path = ROOT / "Challenge.lean"
 
     formalization = load_formalization(formalization_path)
     cfg = load_comparator(comparator_path)
+    challenge_path = challenge_source_path(cfg)
     challenge_text = challenge_path.read_text(encoding="utf-8")
 
     errors: list[str] = []
