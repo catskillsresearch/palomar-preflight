@@ -122,19 +122,30 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def evidence_fingerprint() -> str:
+def module_source_path(module: str) -> Path:
+    return ROOT / Path(*module.split(".")).with_suffix(".lean")
+
+
+def evidence_fingerprint(cfg: dict | None = None) -> str:
     import hashlib
 
+    if cfg is None:
+        cfg = load_comparator()
     digest = hashlib.sha256()
-    for rel in (
-        "Challenge.lean",
+    rels = [
+        str(module_source_path(cfg["challenge_module"]).relative_to(ROOT)),
         "formalization.yaml",
         "comparator.json",
         "README.md",
         "PROVENANCE.md",
         "arxiv.md",
-        "Solution.lean",
-    ):
+        str(module_source_path(cfg["solution_module"]).relative_to(ROOT)),
+    ]
+    # Also hash legacy root names when present (nowakowska-style layout).
+    for legacy in ("Challenge.lean", "Solution.lean"):
+        if legacy not in rels:
+            rels.append(legacy)
+    for rel in rels:
         path = ROOT / rel
         digest.update(rel.encode())
         digest.update(b"\0")
@@ -677,14 +688,23 @@ def main() -> int:
     cfg = load_comparator()
     formalization_yaml = read_text(ROOT / "formalization.yaml")
     repo_commit = str(mechanical.get("repository", {}).get("commit") or "unknown")
-    fingerprint = evidence_fingerprint()
+    fingerprint = evidence_fingerprint(cfg)
+    challenge_path = module_source_path(cfg["challenge_module"])
+    solution_path = module_source_path(cfg["solution_module"])
+    if not challenge_path.is_file():
+        raise SystemExit(
+            f"FAIL: Challenge source not found for challenge_module="
+            f"{cfg['challenge_module']!r} (tried {challenge_path.relative_to(ROOT)})."
+        )
 
     proof_texts = [
-        read_text(ROOT / "Challenge.lean", 40_000),
-        read_text(ROOT / "README.md", 40_000),
+        read_text(challenge_path, 40_000),
+        read_text(ROOT / "README.md", 40_000) if (ROOT / "README.md").is_file() else "",
         formalization_yaml,
     ]
-    if (ROOT / "Solution.lean").is_file():
+    if solution_path.is_file():
+        proof_texts.append(read_text(solution_path, 40_000))
+    elif (ROOT / "Solution.lean").is_file():
         proof_texts.append(read_text(ROOT / "Solution.lean", 40_000))
 
     step_results: list[dict] = []

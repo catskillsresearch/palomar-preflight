@@ -61,9 +61,14 @@ def dirty_relative_to_head(paths: list[Path]) -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
-def challenge_imports() -> list[str]:
-    text = (ROOT / "Challenge.lean").read_text(encoding="utf-8")
-    return re.findall(r"^import\s+(\S+)", text, re.MULTILINE)
+def module_source_path(module: str) -> Path:
+    """Map a dotted Lean module name to its source file under the project root."""
+    return ROOT / Path(*module.split(".")).with_suffix(".lean")
+
+
+def challenge_imports(challenge_path: Path) -> list[str]:
+    text = challenge_path.read_text(encoding="utf-8")
+    return re.findall(r"^(?:public\s+)?import\s+(\S+)", text, re.MULTILINE)
 
 
 def load_comparator() -> dict:
@@ -76,10 +81,22 @@ def build_report(*, allow_dirty: bool = False) -> dict:
     commit = git_head()
     theorems = cfg["theorem_names"]
     definitions = cfg.get("definition_names", [])
+    challenge_path = module_source_path(cfg["challenge_module"])
+    solution_path = module_source_path(cfg["solution_module"])
+    if not challenge_path.is_file():
+        raise SystemExit(
+            f"FAIL: Challenge source not found for challenge_module="
+            f"{cfg['challenge_module']!r} (tried {challenge_path.relative_to(ROOT)})."
+        )
+    if not solution_path.is_file():
+        raise SystemExit(
+            f"FAIL: Solution source not found for solution_module="
+            f"{cfg['solution_module']!r} (tried {solution_path.relative_to(ROOT)})."
+        )
     paths = {
         "comparator.json": ROOT / "comparator.json",
-        "Challenge.lean": ROOT / "Challenge.lean",
-        "Solution.lean": ROOT / "Solution.lean",
+        str(challenge_path.relative_to(ROOT)): challenge_path,
+        str(solution_path.relative_to(ROOT)): solution_path,
         "formalization.yaml": ROOT / "formalization.yaml",
         "lean-toolchain": ROOT / "lean-toolchain",
     }
@@ -115,7 +132,7 @@ def build_report(*, allow_dirty: bool = False) -> dict:
             "permitted_axioms": cfg["permitted_axioms"],
         },
         "declarations_checked_order": theorems + definitions,
-        "challenge_imports": challenge_imports(),
+        "challenge_imports": challenge_imports(challenge_path),
         "artifact_hashes": {name: sha256_file(path) for name, path in paths.items() if path.is_file()},
         "preflight": {
             "mechanical_steps": "comparator-config, imports, build, type-compare, pinned-comparator, sorry-scan, axioms",
